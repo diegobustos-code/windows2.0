@@ -127,9 +127,9 @@ class ZoomAttendanceDesktopApp(tk.Tk):
         self._build_style()
         self._build_ui()
 
-        # El mes se pide con un pequeño retraso para que la ventana
-        # principal ya esté armada y centrada antes de mostrar el popup.
-        self.after(250, self._ask_month_blocking)
+        # Se pregunta con un pequeño retraso para que la ventana principal
+        # ya esté armada y centrada antes de mostrar el popup.
+        self.after(250, self._ask_startup_mode)
 
     # ------------------------------------------------------------------
     # Estilo visual
@@ -354,6 +354,80 @@ class ZoomAttendanceDesktopApp(tk.Tk):
     # ------------------------------------------------------------------
     def ask_attendance_month(self):
         self._open_month_popup(force=False)
+
+    def _ask_startup_mode(self):
+        """Al abrir la app, antes de pedir el mes, se pregunta qué se
+        quiere hacer: cotejar UN mes (flujo de siempre, pide el mes de
+        entrada) o abrir directamente el Reporte Multi-Mes (donde el mes
+        se define archivo por archivo, así que no hace falta pedirlo
+        aquí). Es una ventana obligatoria (no se puede cerrar sin elegir),
+        igual que el popup de mes que reemplaza en el arranque."""
+        win = tk.Toplevel(self)
+        win.title("¿Qué quieres hacer?")
+        win.configure(bg="white")
+        win.resizable(False, False)
+        win.transient(self)
+
+        frame = tk.Frame(win, bg="white", padx=24, pady=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(
+            frame, text="¿Qué quieres hacer?", bg="white", fg="#262626",
+            font=("Segoe UI", 13, "bold"),
+        ).pack(anchor="w", pady=(0, 4))
+        tk.Label(
+            frame,
+            text="Elige el tipo de reporte con el que vas a trabajar ahora.",
+            bg="white", fg="#5A5A5A", font=("Segoe UI", 10), justify="left",
+        ).pack(anchor="w", pady=(0, 16))
+
+        def _elegir_mensual():
+            win.destroy()
+            self._ask_month_blocking()
+
+        def _elegir_multi_mes():
+            win.destroy()
+            self.open_multi_month_window()
+
+        opcion_mensual = tk.Frame(frame, bg="white")
+        opcion_mensual.pack(fill=tk.X, pady=(0, 10))
+        tk.Button(
+            opcion_mensual, text="Asistencia de UN mes", command=_elegir_mensual,
+            bg=COLOR_BLUE, fg="white", activebackground=COLOR_BLUE,
+            activeforeground="white", relief="flat", bd=0,
+            font=("Segoe UI", 10, "bold"), pady=10,
+        ).pack(fill=tk.X)
+        tk.Label(
+            opcion_mensual,
+            text="Carga un CSV de Zoom de un solo mes y cotéjalo contra el listado de socios.",
+            bg="white", fg="#7A828B", font=("Segoe UI", 8), justify="left", wraplength=380,
+        ).pack(anchor="w", pady=(4, 0))
+
+        opcion_multi = tk.Frame(frame, bg="white")
+        opcion_multi.pack(fill=tk.X)
+        tk.Button(
+            opcion_multi, text="Reporte Multi-Mes (varios meses)", command=_elegir_multi_mes,
+            bg=COLOR_TEAL, fg="white", activebackground=COLOR_TEAL,
+            activeforeground="white", relief="flat", bd=0,
+            font=("Segoe UI", 10, "bold"), pady=10,
+        ).pack(fill=tk.X)
+        tk.Label(
+            opcion_multi,
+            text="Carga varios CSV de Zoom (uno por mes) y genera un solo Excel con "
+                 "una columna P/A por cada mes.",
+            bg="white", fg="#7A828B", font=("Segoe UI", 8), justify="left", wraplength=380,
+        ).pack(anchor="w", pady=(4, 0))
+
+        def _on_close():
+            pass  # Obligatorio: hay que elegir una de las dos opciones para continuar.
+
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+
+        win.update_idletasks()
+        x = self.winfo_rootx() + max((self.winfo_width() - win.winfo_width()) // 2, 0)
+        y = self.winfo_rooty() + max((self.winfo_height() - win.winfo_height()) // 2, 0)
+        win.geometry(f"+{x}+{y}")
+        win.grab_set()
 
     def _ask_month_blocking(self):
         self._open_month_popup(force=True)
