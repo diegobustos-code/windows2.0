@@ -18,7 +18,7 @@ ventana para armar la lista de meses antes de generar el reporte.
 import os
 
 import tkinter as tk
-from tkinter import ttk, filedialog, simpledialog
+from tkinter import ttk, filedialog, simpledialog, messagebox
 
 from csv_processor import CSVProcessingError, load_zoom_csv
 from roster_matcher import RosterProcessingError, load_roster_excel
@@ -235,8 +235,36 @@ class MultiMonthWindow(tk.Toplevel):
                 continue
 
             filename = os.path.basename(filepath)
-            label = detect_month_from_filename(filename)
-            if not label:
+            guessed = detect_month_from_filename(filename)
+
+            if guessed:
+                # Se detectó un mes automáticamente (por el nombre del mes
+                # en el archivo, o por la fecha numérica que Zoom agrega
+                # por defecto al exportarlo) — pero SIEMPRE se le pide
+                # confirmación al usuario antes de darlo por bueno, ya que
+                # reuniones extraordinarias u otros nombres de archivo
+                # podrían llevar a una detección incorrecta.
+                confirmado = messagebox.askyesno(
+                    "Confirmar mes detectado",
+                    f"Archivo:\n{filename}\n\n"
+                    f"Se detectó que corresponde al mes: \"{guessed}\".\n\n"
+                    f"¿Es correcto?",
+                    parent=self,
+                )
+                if confirmado:
+                    label = guessed
+                else:
+                    label = simpledialog.askstring(
+                        "Mes de este archivo",
+                        f"Ingresa el mes correcto para:\n{filename}\n(ej. \"Julio 2026\"):",
+                        initialvalue=guessed,
+                        parent=self,
+                    )
+                    if not label or not label.strip():
+                        omitidos += 1
+                        continue  # el usuario canceló: se omite este archivo
+                    label = label.strip()
+            else:
                 label = simpledialog.askstring(
                     "Mes de este archivo",
                     "No se pudo adivinar el mes a partir del nombre del "

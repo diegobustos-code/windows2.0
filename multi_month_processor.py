@@ -37,6 +37,14 @@ _MONTH_DISPLAY = {
     "noviembre": "Noviembre", "diciembre": "Diciembre",
 }
 
+# Mapeo número de mes (1-12) -> nombre en español, para el caso de Zoom
+# que nombra el CSV con una fecha numérica (ver detect_month_from_filename).
+_MONTH_NUMBER_TO_DISPLAY = {
+    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+    7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre",
+    12: "Diciembre",
+}
+
 # Para reconocer también abreviaciones típicas de nombre de archivo en
 # inglés/abreviado (ej. "zoom_sep2026.csv", "asistencia-ago-26.csv").
 _MONTH_ABBREV = {
@@ -69,6 +77,9 @@ def detect_month_from_filename(filename: str) -> Optional[str]:
         "Reunion Zoom - agosto 2026.csv"   -> "Agosto 2026"
         "zoom_sep2026_participantes.csv"   -> "Septiembre 2026"
         "asistencia-ago-26.csv"            -> "Agosto 2026" (año de 2 dígitos)
+        "participants_83994250103_2026_07_23.csv" -> "Julio 2026" (nombre
+            EXACTO que usa Zoom por defecto al exportar la lista de
+            participantes: termina en año_mes_día antes del ".csv")
 
     Devuelve None si no se pudo detectar ningún mes en el nombre; en ese
     caso, el programa debe pedírselo al usuario manualmente.
@@ -90,21 +101,34 @@ def detect_month_from_filename(filename: str) -> Optional[str]:
             if re.search(rf"\b{abbrev}\b", normalized):
                 month_key = full
                 break
-    if month_key is None:
-        return None
 
-    display = _MONTH_DISPLAY[month_key]
+    if month_key is not None:
+        display = _MONTH_DISPLAY[month_key]
 
-    year_match = re.search(r"\b(20\d{2})\b", normalized)
-    if year_match:
-        return f"{display} {year_match.group(1)}"
+        year_match = re.search(r"\b(20\d{2})\b", normalized)
+        if year_match:
+            return f"{display} {year_match.group(1)}"
 
-    # Año de 2 dígitos suelto (ej. "ago 26" -> se asume 20XX)
-    short_year_match = re.search(rf"\b{month_key[:3]}\w*\s*(\d{{2}})\b", normalized)
-    if short_year_match:
-        return f"{display} 20{short_year_match.group(1)}"
+        # Año de 2 dígitos suelto (ej. "ago 26" -> se asume 20XX)
+        short_year_match = re.search(rf"\b{month_key[:3]}\w*\s*(\d{{2}})\b", normalized)
+        if short_year_match:
+            return f"{display} 20{short_year_match.group(1)}"
 
-    return display
+        return display
+
+    # No había ningún nombre de mes en el archivo: se prueba con el
+    # formato de fecha numérica que usa Zoom por defecto al exportar la
+    # lista de participantes, con el patrón AÑO-MES-DÍA (ej.
+    # "..._2026_07_23.csv" o "...-2026-07-23.csv") justo antes de la
+    # extensión del archivo.
+    date_match = re.search(r"(20\d{2})[-_](\d{2})[-_](\d{2})", filename)
+    if date_match:
+        year_str, month_str, _day_str = date_match.groups()
+        month_int = int(month_str)
+        if 1 <= month_int <= 12:
+            return f"{_MONTH_NUMBER_TO_DISPLAY[month_int]} {year_str}"
+
+    return None
 
 
 def build_multi_month_matrix(
