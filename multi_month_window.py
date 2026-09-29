@@ -339,7 +339,11 @@ class MultiMonthWindow(tk.Toplevel):
         filepath = base_dir / filename
 
         try:
-            export_multi_month_to_excel(filas, month_labels, str(filepath))
+            export_multi_month_to_excel(
+                filas, month_labels, str(filepath),
+                no_encontrados_por_mes=no_encontrados_por_mes,
+                ambiguos_por_mes=ambiguos_por_mes,
+            )
         except Exception as e:
             show_popup(self, "Error al exportar", str(e), success=False)
             return
@@ -351,9 +355,8 @@ class MultiMonthWindow(tk.Toplevel):
             pendientes_note = (
                 f"\n\nOjo: sumando todos los meses hubo {total_no_encontrados} "
                 f"participante(s) no encontrado(s) en el listado y "
-                f"{total_ambiguos} ambiguo(s). No se incluyen en este Excel "
-                f"(el reporte se arma a partir del listado oficial de socios), "
-                f"pero conviene revisarlos aparte."
+                f"{total_ambiguos} ambiguo(s). Quedaron listados, mes por mes, "
+                f"en la pestaña \"Pendientes\" del mismo Excel."
             )
 
         show_popup(
