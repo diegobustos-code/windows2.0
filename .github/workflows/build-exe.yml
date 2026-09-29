@@ -1,0 +1,51 @@
+name: Compilar EXE de Windows
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    # A diferencia del APK (que se compila en una máquina Linux con
+    # Buildozer), un .exe de Windows solo se puede compilar en una
+    # máquina Windows de verdad — por eso este job corre en
+    # "windows-latest" en vez de "ubuntu-22.04".
+    runs-on: windows-latest
+    steps:
+      - name: Descargar el código del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias (openpyxl, Pillow, PyInstaller)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-desktop.txt
+
+      - name: Compilar el .exe con PyInstaller
+        # Se usa --onedir en vez de --onefile: --onefile genera falsos
+        # positivos de antivirus con mucha frecuencia, porque se
+        # autoextrae en una carpeta temporal en tiempo de ejecución, un
+        # comportamiento típico del malware que se auto-descomprime.
+        # Con --onedir, PyInstaller deja el .exe y sus dependencias como
+        # archivos sueltos dentro de una carpeta, sin ese paso de
+        # autoextracción, así que muchos antivirus dejan de marcarlo.
+        run: pyinstaller --noconfirm --onedir --windowed --name "AsistenciaZoom" --icon "logo.ico" --add-data "logo.png;." --add-data "logo.ico;." desktop_app.py
+
+      - name: Publicar la carpeta del programa como archivo descargable
+        # Con --onedir el resultado ya NO es un solo archivo .exe, sino
+        # una carpeta completa (dist/AsistenciaZoom/) que contiene el
+        # .exe más sus dependencias. GitHub Actions comprime
+        # automáticamente esta carpeta en un .zip al publicarla como
+        # artefacto, así que se sigue descargando en un solo paso.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AsistenciaZoom-EXE
+          path: |
+            dist/AsistenciaZoom/
+            build/AsistenciaZoom/warn-AsistenciaZoom.txt
