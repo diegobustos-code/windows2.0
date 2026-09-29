@@ -1,0 +1,6 @@
+# Dependencias para la versión de escritorio (Windows). Tkinter viene
+# incluido con Python, así que no hace falta instalarlo aparte.
+openpyxl==3.1.5
+et_xmlfile
+pillow
+pyinstaller==6.10.0
