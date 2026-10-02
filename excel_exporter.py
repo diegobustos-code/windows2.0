@@ -124,10 +124,14 @@ def export_multi_month_to_excel(records: List[Dict[str, object]], month_labels: 
 
     Si se entregan `no_encontrados_por_mes` y/o `ambiguos_por_mes` (mismo
     formato que devuelve build_multi_month_matrix: un diccionario
-    {mes: [registros_zoom]}), se agrega una SEGUNDA PESTAÑA llamada
-    "Pendientes" en el mismo archivo, con una fila por cada participante
-    de Zoom que no se pudo cotejar en cada mes (no encontrado o ambiguo),
-    para revisión manual sin salir del mismo Excel.
+    {mes: [registros_zoom]}), se agregan DOS PESTAÑAS más al mismo
+    archivo, para revisión manual sin salir del Excel:
+        - "No Encontrados": participantes de Zoom que no coincidieron
+          con ningún socio del listado, mes por mes.
+        - "Ambiguos": participantes de Zoom cuyo nombre coincidió por
+          igual con dos o más socios (por ejemplo, un nombre de pila que
+          se repite entre varios socios), mes por mes — para buscarlos y
+          revisar a cuál asignarlos a mano si corresponde.
     """
     columns = ["Nombre", "Apellido", "Sede"] + list(month_labels)
 
@@ -188,58 +192,71 @@ def export_multi_month_to_excel(records: List[Dict[str, object]], month_labels: 
 
     ws.freeze_panes = "D2"
 
-    # --- Segunda pestaña: "Pendientes" (no encontrados / ambiguos por mes) ---
+    # --- Pestañas de revisión: "No Encontrados" y "Ambiguos" ---
     no_encontrados_por_mes = no_encontrados_por_mes or {}
     ambiguos_por_mes = ambiguos_por_mes or {}
 
-    ws2 = wb.create_sheet("Pendientes")
-    pend_columns = ["Mes", "Categoría", "Nombre en Zoom", "Duración (minutos)"]
-    ws2.append(pend_columns)
-    for cell in ws2[1]:
+    _write_review_sheet(
+        wb, "No Encontrados", month_labels, no_encontrados_por_mes,
+        empty_message="No hubo participantes sin encontrar en ningún mes.",
+        table_name="TablaNoEncontradosMultiMes",
+    )
+    _write_review_sheet(
+        wb, "Ambiguos", month_labels, ambiguos_por_mes,
+        empty_message="No hubo participantes ambiguos en ningún mes.",
+        table_name="TablaAmbiguosMultiMes",
+    )
+
+    wb.save(filepath)
+
+
+def _write_review_sheet(wb: Workbook, sheet_title: str, month_labels: List[str],
+                         records_por_mes: Dict[str, List[Dict[str, object]]],
+                         empty_message: str, table_name: str) -> None:
+    """
+    Agrega una pestaña de revisión manual (usada por export_multi_month_to_excel
+    para las hojas "No Encontrados" y "Ambiguos"): una fila por cada
+    participante de Zoom de esa categoría, indicando de qué mes es, para
+    poder buscarlos y revisarlos sin salir del mismo Excel.
+    """
+    ws = wb.create_sheet(sheet_title[:31])
+    columns = ["Mes", "Nombre en Zoom", "Duración (minutos)"]
+    ws.append(columns)
+    for cell in ws[1]:
         cell.font = Font(bold=True)
 
     for month_label in month_labels:
-        for r in no_encontrados_por_mes.get(month_label, []):
-            ws2.append([
-                month_label, "No encontrado en el listado oficial",
-                r.get("Nombre", ""), r.get("Duración (minutos)", 0),
-            ])
-        for r in ambiguos_por_mes.get(month_label, []):
-            ws2.append([
-                month_label, "Coincide con más de un socio (ambiguo)",
-                r.get("Nombre", ""), r.get("Duración (minutos)", 0),
-            ])
+        for r in records_por_mes.get(month_label, []):
+            ws.append([month_label, r.get("Nombre", ""), r.get("Duración (minutos)", 0)])
 
-    pend_last_row = ws2.max_row
-    if pend_last_row == 1:
-        # No hubo ningún pendiente en ningún mes: se deja una nota en vez
-        # de una tabla vacía, para que quede claro que no es un error.
-        ws2.merge_cells("A2:D2")
-        nota = ws2.cell(row=2, column=1)
-        nota.value = "No hubo participantes pendientes de revisión en ningún mes."
+    last_row = ws.max_row
+    if last_row == 1:
+        # No hubo ningún registro en esta categoría: se deja una nota en
+        # vez de una tabla vacía, para que quede claro que no es un error.
+        ws.merge_cells(f"A2:{get_column_letter(len(columns))}2")
+        nota = ws.cell(row=2, column=1)
+        nota.value = empty_message
         nota.font = Font(italic=True, color="FF6A6A6A")
-        pend_last_row = 2
+        last_row = 2
     else:
-        pend_last_col_letter = get_column_letter(len(pend_columns))
-        pend_table = Table(displayName="TablaPendientesMultiMes", ref=f"A1:{pend_last_col_letter}{pend_last_row}")
-        pend_table.tableStyleInfo = TableStyleInfo(
+        last_col_letter = get_column_letter(len(columns))
+        table = Table(displayName=table_name, ref=f"A1:{last_col_letter}{last_row}")
+        table.tableStyleInfo = TableStyleInfo(
             name="TableStyleMedium9",
             showFirstColumn=False,
             showLastColumn=False,
             showRowStripes=True,
             showColumnStripes=False,
         )
-        ws2.add_table(pend_table)
+        ws.add_table(table)
 
-    for col_index, column_name in enumerate(pend_columns, start=1):
+    for col_index, column_name in enumerate(columns, start=1):
         col_letter = get_column_letter(col_index)
         max_length = len(str(column_name))
-        for row_idx in range(2, pend_last_row + 1):
-            value = ws2.cell(row=row_idx, column=col_index).value
+        for row_idx in range(2, last_row + 1):
+            value = ws.cell(row=row_idx, column=col_index).value
             if value is not None:
                 max_length = max(max_length, len(str(value)))
-        ws2.column_dimensions[col_letter].width = max_length + 4
+        ws.column_dimensions[col_letter].width = max_length + 4
 
-    ws2.freeze_panes = "A2"
-
-    wb.save(filepath)
+    ws.freeze_panes = "A2"

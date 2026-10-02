@@ -29,10 +29,20 @@ Cómo funciona el cruce (en resumen):
        de Zoom se marca como "ambiguo" y NO se asigna automáticamente
        (para evitar adjudicar minutos de asistencia a la persona
        equivocada); queda disponible para revisión manual.
-    4. Si un participante de Zoom no coincide con ningún socio, se marca
-       como "no encontrado" (puede ser un invitado, un error de tipeo muy
-       grande, o alguien que no está en el listado oficial).
-    5. Si un mismo socio aparece más de una vez en el Zoom (por ejemplo,
+    4. Si NINGÚN socio coincide por apellido (paso 2), se intenta una
+       SEGUNDA FASE: cotejar solo por el nombre de pila, comparando
+       contra el campo "Nombres" del socio. Esto cubre el caso de
+       alguien que en Zoom escribió nomás su nombre, sin apellido. Si ese
+       nombre es único en el listado (ningún otro socio comparte ese
+       nombre), se asigna igual; si dos o más socios comparten ese mismo
+       nombre, el participante queda "ambiguo" (nunca se asigna a
+       ciegas). Esta segunda fase NUNCA se usa si ya hubo al menos un
+       candidato por apellido en la primera fase.
+    5. Si un participante de Zoom no coincide con ningún socio (ni por
+       apellido ni por nombre), se marca como "no encontrado" (puede ser
+       un invitado, un error de tipeo muy grande, o alguien que no está
+       en el listado oficial).
+    6. Si un mismo socio aparece más de una vez en el Zoom (por ejemplo,
        se desconectó y volvió a entrar), sus minutos se SUMAN.
 
 Nada de esto es 100% infalible con datos tan heterogéneos como los
@@ -177,6 +187,31 @@ def _score(entry: Dict[str, object], zoom_tokens: set) -> Optional[Tuple[int, fl
     return (raw_score, jaccard)
 
 
+def _score_by_nombre(entry: Dict[str, object], zoom_tokens: set) -> Optional[Tuple[int, float]]:
+    """
+    Segunda fase de cotejo, usada SOLO cuando un participante de Zoom no
+    tuvo ningún candidato por apellido (_score devolvió None para todos
+    los socios) — el caso típico de alguien que en Zoom escribió nomás su
+    nombre de pila, sin apellido. Aquí se compara contra el campo
+    "Nombres" del socio en vez del apellido.
+
+    Devuelve None si no hay ninguna palabra en común. Si la hay, se
+    comporta igual que _score: se usa para desempatar entre varios
+    candidatos débiles, y si al final queda más de uno empatado en primer
+    lugar, match_zoom_to_roster lo marca como "ambiguo" en vez de
+    asignarlo a ciegas — así que un nombre de pila repetido entre varios
+    socios NUNCA se asigna solo, solo cuando es único en el listado.
+    """
+    nombres: set = entry["_nombres"]
+    overlap = nombres & zoom_tokens
+    if not overlap:
+        return None
+    raw_score = len(overlap)
+    union = nombres | zoom_tokens
+    jaccard = len(overlap) / len(union) if union else 0.0
+    return (raw_score, jaccard)
+
+
 def match_zoom_to_roster(
     zoom_records: List[Dict[str, object]],
     roster_records: List[Dict[str, str]],
@@ -225,6 +260,18 @@ def match_zoom_to_roster(
             s = _score(entry, zoom_tokens)
             if s is not None:
                 candidates.append((s, idx))
+
+        if not candidates:
+            # Nadie coincidió por apellido: se intenta la segunda fase,
+            # cotejando SOLO por nombre de pila (típico de alguien que en
+            # Zoom escribió nomás su nombre, sin apellido). Si ese nombre
+            # es único en el listado de socios, se asigna igual; si hay
+            # dos o más socios con ese mismo nombre, queda "ambiguo" más
+            # abajo (nunca se asigna a ciegas).
+            for idx, entry in enumerate(entries):
+                s = _score_by_nombre(entry, zoom_tokens)
+                if s is not None:
+                    candidates.append((s, idx))
 
         if not candidates:
             no_encontrados.append(zr)

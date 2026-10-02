@@ -384,7 +384,7 @@ class MultiMonthWindow(tk.Toplevel):
                 f"\n\nOjo: sumando todos los meses hubo {total_no_encontrados} "
                 f"participante(s) no encontrado(s) en el listado y "
                 f"{total_ambiguos} ambiguo(s). Quedaron listados, mes por mes, "
-                f"en la pestaña \"Pendientes\" del mismo Excel."
+                f"en las pestañas \"No Encontrados\" y \"Ambiguos\" del mismo Excel."
             )
 
         show_popup(
