@@ -67,6 +67,13 @@ class RosterProcessingError(Exception):
 
 ROSTER_COLUMNS = ["Sede", "Apellido Paterno", "Apellido Materno", "Nombres"]
 
+# Formato alternativo aceptado para el listado de socios: el apellido
+# viene en UNA SOLA columna (no separado en Paterno/Materno) y la columna
+# de nombre puede tener cualquier título (incluso venir mal escrito o
+# vacío) — se usa la que sobra una vez identificadas "Apellido" y "Sede".
+# Ver _detect_simple_format() más abajo.
+ROSTER_COLUMNS_SIMPLE = ["Sede", "Apellido"]
+
 # Palabras que se ignoran al comparar nombres (no aportan para identificar
 # a una persona: cargos, dispositivos, artículos, restos de "sede", etc.)
 STOPWORDS = {
@@ -92,14 +99,83 @@ def tokenize(text: str) -> List[str]:
     return [t for t in normalized.split() if len(t) >= 2 and t not in STOPWORDS]
 
 
+def _find_exact_column(headers: List[str], wanted: str) -> Optional[int]:
+    """Busca en `headers` la columna cuyo título normalizado sea EXACTAMENTE
+    igual a `wanted` (ej. "Apellido" no matchea "Apellido Paterno"). Devuelve
+    el índice de la columna, o None si no se encontró."""
+    wanted_norm = _normalize(wanted)
+    for idx, h in enumerate(headers):
+        if _normalize(h) == wanted_norm:
+            return idx
+    return None
+
+
+def _detect_full_format(headers: List[str]) -> Optional[Dict[str, int]]:
+    """Intenta detectar el formato ORIGINAL del listado de socios: columnas
+    Sede, Apellido Paterno, Apellido Materno, Nombres (una columna por
+    cada una, el apellido ya separado). Devuelve un diccionario
+    {columna_canónica: índice} si TODAS están presentes, o None si falta
+    alguna (en cuyo caso se prueba el formato simple)."""
+    col_index: Dict[str, int] = {}
+    for wanted in ROSTER_COLUMNS:
+        idx = _find_exact_column(headers, wanted)
+        if idx is None:
+            return None
+        col_index[wanted] = idx
+    return col_index
+
+
+def _detect_simple_format(headers: List[str]) -> Optional[Dict[str, int]]:
+    """
+    Intenta detectar el formato ALTERNATIVO del listado de socios: el
+    apellido viene en UNA SOLA columna llamada exactamente "Apellido" (no
+    separado en Paterno/Materno), más una columna "Sede", más una tercera
+    columna con el nombre — cuyo título puede ser cualquier cosa ("Nombre",
+    "Nombres", o incluso venir mal escrito), ya que se toma la primera
+    columna con encabezado no vacío que no sea ni "Apellido" ni "Sede".
+
+    Devuelve {"Sede": idx, "Apellido": idx, "Nombres": idx} si se pudo
+    armar el trío completo, o None si falta "Apellido" o "Sede" (en cuyo
+    caso el archivo no corresponde a ninguno de los dos formatos
+    aceptados) — si lo único que falta es la columna de nombre, igual
+    devuelve None, para que el mensaje de error final sea claro.
+    """
+    sede_idx = _find_exact_column(headers, "Sede")
+    apellido_idx = _find_exact_column(headers, "Apellido")
+    if sede_idx is None or apellido_idx is None:
+        return None
+
+    nombre_idx = None
+    for idx, h in enumerate(headers):
+        if idx in (sede_idx, apellido_idx):
+            continue
+        if h.strip():  # cualquier encabezado no vacío sirve como columna de nombre
+            nombre_idx = idx
+            break
+    if nombre_idx is None:
+        return None
+
+    return {"Sede": sede_idx, "Apellido": apellido_idx, "Nombres": nombre_idx}
+
+
 def load_roster_excel(filepath: str) -> List[Dict[str, str]]:
     """
-    Carga el listado oficial de socios desde un archivo Excel (.xlsx) con
-    las columnas: Sede, Apellido Paterno, Apellido Materno, Nombres
-    (el orden de las columnas no importa, se detectan por nombre).
+    Carga el listado oficial de socios desde un archivo Excel (.xlsx).
 
-    Lanza RosterProcessingError con un mensaje claro si falta alguna
-    columna obligatoria o el archivo está vacío.
+    Acepta DOS formatos de columnas (el orden de las columnas no importa
+    en ninguno de los dos, se detectan por el título del encabezado):
+
+      1. Formato completo: Sede, Apellido Paterno, Apellido Materno,
+         Nombres (el apellido ya viene separado en dos columnas).
+
+      2. Formato simple: Sede, Apellido (el apellido completo en UNA sola
+         columna) y una tercera columna con el nombre, con cualquier
+         título. En este caso, el apellido completo se trata igual que
+         el "Apellido Paterno" del formato completo (sin dividirlo), lo
+         que no afecta el cotejo de nombres.
+
+    Lanza RosterProcessingError con un mensaje claro si el archivo no
+    corresponde a ninguno de los dos formatos, o si está vacío.
     """
     try:
         wb = load_workbook(filepath, data_only=True)
@@ -115,36 +191,53 @@ def load_roster_excel(filepath: str) -> List[Dict[str, str]]:
         raise RosterProcessingError("El listado de socios está vacío.")
 
     headers = [str(h).strip() if h is not None else "" for h in rows[0]]
-    header_map = {}
-    for wanted in ROSTER_COLUMNS:
-        wanted_norm = _normalize(wanted)
-        match = None
-        for h in headers:
-            if _normalize(h) == wanted_norm:
-                match = h
-                break
-        header_map[wanted] = match
 
-    missing = [col for col, real in header_map.items() if real is None]
-    if missing:
+    full_cols = _detect_full_format(headers)
+    simple_cols = None if full_cols else _detect_simple_format(headers)
+
+    if full_cols is not None:
+        col_index = full_cols
+        apellido_materno_idx = col_index["Apellido Materno"]
+    elif simple_cols is not None:
+        # Se reutiliza la llave "Apellido Paterno" para guardar el apellido
+        # completo (sin dividir); "Apellido Materno" queda sin columna
+        # (se completa como cadena vacía más abajo). El resto del programa
+        # (cotejo, exportación) no necesita ningún cambio para esto, ya
+        # que solo le importa el conjunto de palabras del apellido, no en
+        # cuántas columnas venía dividido.
+        col_index = {
+            "Sede": simple_cols["Sede"],
+            "Apellido Paterno": simple_cols["Apellido"],
+            "Nombres": simple_cols["Nombres"],
+        }
+        apellido_materno_idx = None
+    else:
         raise RosterProcessingError(
-            "El listado de socios no tiene las siguientes columnas "
-            "obligatorias:\n" + "\n".join(f"  • {m}" for m in missing)
-            + "\n\nEncabezados encontrados en el archivo:\n"
+            "El listado de socios no tiene ninguno de los formatos de "
+            "columnas aceptados.\n\n"
+            "Encabezados encontrados en el archivo:\n"
             + ", ".join(h for h in headers if h)
-            + "\n\nLas columnas deben llamarse exactamente: "
-            + ", ".join(ROSTER_COLUMNS)
+            + "\n\nSe acepta cualquiera de estos dos formatos de columnas:\n"
+            "  • Sede, Apellido Paterno, Apellido Materno, Nombres\n"
+            "  • Sede, Apellido (el apellido completo en una sola columna), "
+            "y una columna con el nombre (con cualquier título)"
         )
-
-    col_index = {col: headers.index(real) for col, real in header_map.items()}
 
     roster: List[Dict[str, str]] = []
     for row in rows[1:]:
         if row is None or not any(row):
             continue
+
+        def _cell(idx: Optional[int]) -> str:
+            if idx is None or idx >= len(row) or row[idx] is None:
+                return ""
+            return str(row[idx]).strip()
+
         record = {
-            col: str(row[idx]).strip() if idx < len(row) and row[idx] is not None else ""
-            for col, idx in col_index.items()
+            "Sede": _cell(col_index["Sede"]),
+            "Apellido Paterno": _cell(col_index["Apellido Paterno"]),
+            "Apellido Materno": _cell(apellido_materno_idx),
+            "Nombres": _cell(col_index["Nombres"]),
         }
         # Ignorar filas completamente vacías de nombre
         if not record["Apellido Paterno"] and not record["Apellido Materno"] and not record["Nombres"]:
