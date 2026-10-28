@@ -110,6 +110,21 @@ def _find_exact_column(headers: List[str], wanted: str) -> Optional[int]:
     return None
 
 
+def _find_exact_column_variants(headers: List[str], variants: List[str]) -> Optional[int]:
+    """Igual que _find_exact_column, pero probando varias variantes de
+    título en orden de preferencia (ej. "Sede" antes que "Sedes"): se
+    recorren TODOS los encabezados buscando la primera variante, y solo
+    si no aparece en ninguno se pasa a la siguiente variante. Así, si el
+    archivo tiene una columna exacta "Sede" Y además otra columna suelta
+    llamada "Sedes" (como puede pasar con una columna vacía sobrante), se
+    sigue prefiriendo siempre la coincidencia exacta "Sede"."""
+    for wanted in variants:
+        idx = _find_exact_column(headers, wanted)
+        if idx is not None:
+            return idx
+    return None
+
+
 def _detect_full_format(headers: List[str]) -> Optional[Dict[str, int]]:
     """Intenta detectar el formato ORIGINAL del listado de socios: columnas
     Sede, Apellido Paterno, Apellido Materno, Nombres (una columna por
@@ -118,7 +133,8 @@ def _detect_full_format(headers: List[str]) -> Optional[Dict[str, int]]:
     alguna (en cuyo caso se prueba el formato simple)."""
     col_index: Dict[str, int] = {}
     for wanted in ROSTER_COLUMNS:
-        idx = _find_exact_column(headers, wanted)
+        variants = ["Sede", "Sedes"] if wanted == "Sede" else [wanted]
+        idx = _find_exact_column_variants(headers, variants)
         if idx is None:
             return None
         col_index[wanted] = idx
@@ -135,13 +151,14 @@ def _detect_simple_format(headers: List[str]) -> Optional[Dict[str, int]]:
     columna con encabezado no vacío que no sea ni "Apellido" ni "Sede".
 
     Devuelve {"Sede": idx, "Apellido": idx, "Nombres": idx} si se pudo
-    armar el trío completo, o None si falta "Apellido" o "Sede" (en cuyo
-    caso el archivo no corresponde a ninguno de los dos formatos
-    aceptados) — si lo único que falta es la columna de nombre, igual
-    devuelve None, para que el mensaje de error final sea claro.
+    armar el trío completo, o None si falta "Apellido"/"Apellidos" o
+    "Sede"/"Sedes" (en cuyo caso el archivo no corresponde a ninguno de
+    los dos formatos aceptados) — si lo único que falta es la columna de
+    nombre, igual devuelve None, para que el mensaje de error final sea
+    claro.
     """
-    sede_idx = _find_exact_column(headers, "Sede")
-    apellido_idx = _find_exact_column(headers, "Apellido")
+    sede_idx = _find_exact_column_variants(headers, ["Sede", "Sedes"])
+    apellido_idx = _find_exact_column_variants(headers, ["Apellido", "Apellidos"])
     if sede_idx is None or apellido_idx is None:
         return None
 
@@ -217,7 +234,8 @@ def load_roster_excel(filepath: str) -> List[Dict[str, str]]:
             "columnas aceptados.\n\n"
             "Encabezados encontrados en el archivo:\n"
             + ", ".join(h for h in headers if h)
-            + "\n\nSe acepta cualquiera de estos dos formatos de columnas:\n"
+            + "\n\nSe acepta cualquiera de estos dos formatos de columnas "
+            "(\"Sede\"/\"Sedes\" y \"Apellido\"/\"Apellidos\" son equivalentes):\n"
             "  • Sede, Apellido Paterno, Apellido Materno, Nombres\n"
             "  • Sede, Apellido (el apellido completo en una sola columna), "
             "y una columna con el nombre (con cualquier título)"
