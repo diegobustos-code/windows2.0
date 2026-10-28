@@ -74,6 +74,7 @@ from ui_common import (
     show_popup,
 )
 from multi_month_window import MultiMonthWindow
+from roster_fill_window import RosterFillWindow
 
 APP_TITLE = "Asistencia Zoom"
 DEFAULT_THRESHOLD = "30"
@@ -216,6 +217,13 @@ class ZoomAttendanceDesktopApp(tk.Tk):
         tk.Button(
             header, text="Reporte Multi-Mes", command=self.open_multi_month_window,
             bg=COLOR_TEAL, fg="white", activebackground=COLOR_TEAL,
+            activeforeground="white", relief="flat", bd=0,
+            font=("Segoe UI", 9, "bold"), padx=10, pady=6, cursor="hand2",
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        tk.Button(
+            header, text="Rellenar Listado", command=self.open_roster_fill_window,
+            bg=COLOR_ORANGE, fg="white", activebackground=COLOR_ORANGE,
             activeforeground="white", relief="flat", bd=0,
             font=("Segoe UI", 9, "bold"), padx=10, pady=6, cursor="hand2",
         ).pack(side=tk.RIGHT, padx=(0, 8))
@@ -389,6 +397,10 @@ class ZoomAttendanceDesktopApp(tk.Tk):
             win.destroy()
             self.open_multi_month_window()
 
+        def _elegir_rellenar():
+            win.destroy()
+            self.open_roster_fill_window()
+
         opcion_mensual = tk.Frame(frame, bg="white")
         opcion_mensual.pack(fill=tk.X, pady=(0, 10))
         tk.Button(
@@ -415,6 +427,21 @@ class ZoomAttendanceDesktopApp(tk.Tk):
             opcion_multi,
             text="Carga varios CSV de Zoom (uno por mes) y genera un solo Excel con "
                  "una columna P/A por cada mes.",
+            bg="white", fg="#7A828B", font=("Segoe UI", 8), justify="left", wraplength=380,
+        ).pack(anchor="w", pady=(4, 0))
+
+        opcion_rellenar = tk.Frame(frame, bg="white")
+        opcion_rellenar.pack(fill=tk.X, pady=(10, 0))
+        tk.Button(
+            opcion_rellenar, text="Rellenar Listado Existente", command=_elegir_rellenar,
+            bg=COLOR_ORANGE, fg="white", activebackground=COLOR_ORANGE,
+            activeforeground="white", relief="flat", bd=0,
+            font=("Segoe UI", 10, "bold"), pady=10,
+        ).pack(fill=tk.X)
+        tk.Label(
+            opcion_rellenar,
+            text="Carga el listado que ya vienes llenando a mano (con una columna por mes) "
+                 "y rellénalo con uno o varios meses nuevos, respetando las \"J\" ya puestas.",
             bg="white", fg="#7A828B", font=("Segoe UI", 8), justify="left", wraplength=380,
         ).pack(anchor="w", pady=(4, 0))
 
@@ -687,6 +714,12 @@ class ZoomAttendanceDesktopApp(tk.Tk):
     # ------------------------------------------------------------------
     def open_multi_month_window(self):
         MultiMonthWindow(self)
+
+    # ------------------------------------------------------------------
+    # Ventana "Rellenar Listado Existente"
+    # ------------------------------------------------------------------
+    def open_roster_fill_window(self):
+        RosterFillWindow(self)
 
     # ------------------------------------------------------------------
     # Carpeta de exportación: Downloads / Asistencia Zoom / <subcarpeta>

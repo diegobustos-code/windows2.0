@@ -131,6 +131,33 @@ def detect_month_from_filename(filename: str) -> Optional[str]:
     return None
 
 
+def extract_month_name_only(text: str) -> Optional[str]:
+    """
+    Igual que la primera mitad de detect_month_from_filename, pero SOLO
+    busca el nombre del mes (sin año) y no recurre al formato de fecha
+    numérica de Zoom — pensada para encabezados de columna de una hoja de
+    Excel en vez de nombres de archivo, donde puede venir texto extra
+    pegado al nombre del mes (ej. "Asistencia Agosto" -> "Agosto",
+    "Octubre (extraordinaria)" -> "Octubre", "SEDES" -> None,
+    "Licencias" -> None).
+
+    Devuelve el nombre del mes con mayúscula inicial (ej. "Octubre"), o
+    None si no se encontró ningún nombre de mes en el texto.
+    """
+    normalized = _normalize(text)
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    normalized = re.sub(r"(?<=[a-z])(?=[0-9])", " ", normalized)
+    normalized = re.sub(r"(?<=[0-9])(?=[a-z])", " ", normalized)
+
+    for candidate in MONTH_NAMES_ES:
+        if re.search(rf"\b{candidate}\b", normalized):
+            return _MONTH_DISPLAY[candidate]
+    for abbrev, full in _MONTH_ABBREV.items():
+        if re.search(rf"\b{abbrev}\b", normalized):
+            return _MONTH_DISPLAY[full]
+    return None
+
+
 def build_multi_month_matrix(
     months: List[Tuple[str, List[Dict[str, object]]]],
     roster_records: List[Dict[str, str]],

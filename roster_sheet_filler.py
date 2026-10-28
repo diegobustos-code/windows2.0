@@ -1,0 +1,331 @@
+# -*- coding: utf-8 -*-
+"""
+roster_sheet_filler.py
+=======================
+Lógica para "Rellenar listado existente": a diferencia del Reporte
+Multi-Mes (que SIEMPRE genera un Excel nuevo desde cero), esta función
+toma un listado de socios que el usuario YA viene llenando a mano mes a
+mes —con columnas que se van agregando a medida que pasan los meses, y
+con "J" (inasistencia justificada) escritas a mano en algunas celdas— y
+lo actualiza IN-MEMORY con los resultados del cotejo de uno o varios
+meses de Zoom, respetando todo lo que ya estaba en el archivo:
+
+    - Si la celda de un socio para el mes que se está procesando ya dice
+      "J", se deja TAL CUAL (nunca se sobrescribe una justificación).
+    - Si el mes que se está cargando ya tiene una columna en la hoja
+      (aunque el encabezado tenga texto extra, ej. "Octubre
+      (extraordinaria)" o "Asistencia Agosto"), se usa esa columna.
+    - Si el mes todavía no tiene columna, se agrega una columna nueva al
+      final, con el nombre del mes como encabezado.
+    - La columna "Sede" (y cualquier otra columna que no sea Nombre/
+      Apellido/un mes reconocible, como "Licencias" o una columna vacía
+      tipo "SEDES") se deja intacta, sin tocarla para nada.
+    - Los participantes de Zoom que no se pudieron cotejar en cada mes
+      (no encontrados / ambiguos) NO se pierden: quedan en dos pestañas
+      nuevas del mismo archivo ("No Encontrados" y "Ambiguos"), igual que
+      en el Reporte Multi-Mes, para revisión manual.
+
+Reutiliza sin cambios la detección de columnas (roster_matcher) y el
+cotejo (roster_matcher.match_zoom_to_roster) que usa el resto de la
+aplicación — lo único nuevo aquí es ESCRIBIR el resultado dentro de la
+hoja existente en vez de generar una tabla desde cero.
+"""
+
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Font
+from openpyxl.worksheet.worksheet import Worksheet
+
+from excel_exporter import _FILL_AUSENTE, _FILL_PRESENTE, _FONT_AUSENTE, _FONT_PRESENTE, _write_review_sheet
+from multi_month_processor import extract_month_name_only
+from roster_matcher import _detect_full_format, _detect_simple_format, match_zoom_to_roster
+
+
+class RosterSheetFillError(Exception):
+    """Error controlado y con mensaje claro para mostrar al usuario final."""
+    pass
+
+
+@dataclass
+class RosterSheetInfo:
+    """Todo lo que se necesita para rellenar un listado de socios ya
+    existente: el libro abierto (para guardarlo al final), la hoja
+    encontrada, dónde está cada columna fija, y un mapa de qué mes ya
+    tiene columna y cuál sería la próxima columna libre para agregar uno
+    nuevo."""
+    workbook: Workbook
+    sheet: Worksheet
+    sheet_name: str
+    row_numbers: List[int]
+    roster_records: List[Dict[str, str]]
+    # mes canónico (ej. "Octubre") -> (índice de columna, encabezado real tal
+    # cual está escrito en el archivo, ej. "Octubre (extraordinaria)")
+    month_columns: Dict[str, Tuple[int, str]] = field(default_factory=dict)
+    next_free_col: int = 1
+
+
+@dataclass
+class FillResult:
+    columns_created: List[str]
+    columns_updated: List[str]
+    no_encontrados_por_mes: Dict[str, List[Dict[str, object]]]
+    ambiguos_por_mes: Dict[str, List[Dict[str, object]]]
+    celdas_escritas: int
+    celdas_respetadas_j: int
+
+
+def load_roster_sheet_for_fill(filepath: str) -> RosterSheetInfo:
+    """
+    Abre un listado de socios que el usuario ya viene llenando a mano
+    (columnas Nombre/Apellido/Sede + una columna por mes ya cotejado, más
+    posibles columnas sueltas como "Licencias"), y prepara toda la
+    información necesaria para poder rellenarlo.
+
+    Si el archivo tiene varias hojas (algo común: aparte de la hoja con
+    el listado puede haber otra hoja de resumen/estadísticas sin
+    relación), se usa la PRIMERA hoja cuyas columnas calcen con alguno de
+    los dos formatos de listado de socios que reconoce el resto de la
+    aplicación (Sede + Apellido Paterno + Apellido Materno + Nombres, o
+    Sede + Apellido + una columna de nombre) — las demás hojas se dejan
+    intactas.
+
+    Lanza RosterSheetFillError con un mensaje claro si ninguna hoja tiene
+    un formato reconocible, o si el archivo está vacío.
+    """
+    try:
+        wb_values = load_workbook(filepath, data_only=True)
+    except Exception as e:
+        raise RosterSheetFillError(
+            f"No se pudo abrir el archivo Excel del listado de socios.\n"
+            f"Detalle técnico: {e}"
+        )
+
+    chosen_sheet_name = None
+    chosen_cols = None  # {"Sede": idx, "Apellido Paterno": idx, "Apellido Materno": idx|None, "Nombres": idx}
+
+    for sheet_name in wb_values.sheetnames:
+        ws = wb_values[sheet_name]
+        first_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+        if not first_row:
+            continue
+        headers = [str(h).strip() if h is not None else "" for h in first_row]
+
+        full_cols = _detect_full_format(headers)
+        if full_cols is not None:
+            chosen_sheet_name = sheet_name
+            chosen_cols = {
+                "Sede": full_cols["Sede"],
+                "Apellido Paterno": full_cols["Apellido Paterno"],
+                "Apellido Materno": full_cols["Apellido Materno"],
+                "Nombres": full_cols["Nombres"],
+            }
+            break
+
+        simple_cols = _detect_simple_format(headers)
+        if simple_cols is not None:
+            chosen_sheet_name = sheet_name
+            chosen_cols = {
+                "Sede": simple_cols["Sede"],
+                "Apellido Paterno": simple_cols["Apellido"],
+                "Apellido Materno": None,
+                "Nombres": simple_cols["Nombres"],
+            }
+            break
+
+    if chosen_sheet_name is None:
+        raise RosterSheetFillError(
+            "No se encontró, en ninguna hoja del archivo, un formato de "
+            "listado de socios reconocible.\n\n"
+            "Se acepta cualquiera de estos dos formatos de columnas:\n"
+            "  • Sede, Apellido Paterno, Apellido Materno, Nombres\n"
+            "  • Sede, Apellido (el apellido completo en una sola columna), "
+            "y una columna con el nombre (con cualquier título)"
+        )
+
+    ws_values = wb_values[chosen_sheet_name]
+    first_row = next(ws_values.iter_rows(min_row=1, max_row=1, values_only=True), None)
+    headers = [str(h).strip() if h is not None else "" for h in (first_row or [])]
+
+    fixed_cols = {c for c in chosen_cols.values() if c is not None}  # índices 0-based
+
+    # --- Detectar columnas de mes ya existentes, entre las columnas que
+    # sobran (ni Sede, ni Apellido[s], ni Nombre) ---
+    month_columns: Dict[str, Tuple[int, str]] = {}
+    last_header_col_0based = -1
+    for idx, h in enumerate(headers):
+        if h:
+            last_header_col_0based = idx
+        if idx in fixed_cols or not h:
+            continue
+        mes = extract_month_name_only(h)
+        if mes and mes not in month_columns:
+            month_columns[mes] = (idx + 1, h)  # +1: openpyxl usa columnas 1-based
+
+    next_free_col = last_header_col_0based + 2  # +1 para pasar a 1-based, +1 para la siguiente libre
+
+    # --- Leer las filas de socios (Nombre/Apellido/Sede) y su número de
+    # fila REAL en la hoja (necesario para escribir después en la celda
+    # correcta de cada socio, incluso si hay filas vacías de por medio) ---
+    row_numbers: List[int] = []
+    roster_records: List[Dict[str, str]] = []
+    for row_idx, row in enumerate(ws_values.iter_rows(min_row=2, values_only=True), start=2):
+        if row is None or not any(row):
+            continue
+
+        def _cell(col_0based: Optional[int]) -> str:
+            if col_0based is None or col_0based >= len(row) or row[col_0based] is None:
+                return ""
+            return str(row[col_0based]).strip()
+
+        apellido_paterno = _cell(chosen_cols["Apellido Paterno"])
+        apellido_materno = _cell(chosen_cols["Apellido Materno"])
+        nombres = _cell(chosen_cols["Nombres"])
+        if not apellido_paterno and not apellido_materno and not nombres:
+            continue
+
+        row_numbers.append(row_idx)
+        roster_records.append({
+            "Sede": _cell(chosen_cols["Sede"]),
+            "Apellido Paterno": apellido_paterno,
+            "Apellido Materno": apellido_materno,
+            "Nombres": nombres,
+        })
+
+    if not roster_records:
+        raise RosterSheetFillError(
+            "El listado de socios se leyó correctamente, pero no se "
+            "encontraron filas de socios válidas en la hoja "
+            f"\"{chosen_sheet_name}\"."
+        )
+
+    # --- Se abre el archivo una SEGUNDA vez, ahora SIN data_only, para
+    # escribir en él más abajo: si el archivo tuviera alguna fórmula en
+    # otra hoja, abrir con data_only=True y volver a guardar ESE mismo
+    # libro la reemplazaría por su valor fijo — abriendo aparte para
+    # escritura se evita perder fórmulas que no tengan que ver con esto. ---
+    try:
+        wb_write = load_workbook(filepath, data_only=False)
+    except Exception as e:
+        raise RosterSheetFillError(
+            f"No se pudo volver a abrir el archivo para escribir los "
+            f"cambios.\nDetalle técnico: {e}"
+        )
+    ws_write = wb_write[chosen_sheet_name]
+
+    return RosterSheetInfo(
+        workbook=wb_write,
+        sheet=ws_write,
+        sheet_name=chosen_sheet_name,
+        row_numbers=row_numbers,
+        roster_records=roster_records,
+        month_columns=month_columns,
+        next_free_col=next_free_col,
+    )
+
+
+def fill_roster_sheet(
+    sheet_info: RosterSheetInfo,
+    months: List[Tuple[str, List[Dict[str, object]]]],
+    threshold_minutes: float = 30.0,
+) -> FillResult:
+    """
+    Rellena, en la hoja ya cargada por load_roster_sheet_for_fill, la
+    columna de cada mes recibido en `months` (lista de tuplas
+    (etiqueta_del_mes, registros_zoom_del_mes), en cualquier orden).
+
+    Para cada mes:
+        - Si ya existe una columna para ese mes (por nombre, ignorando
+          texto extra como "(extraordinaria)"), se reutiliza esa columna
+          TAL CUAL está (no se toca su encabezado).
+        - Si no existe, se agrega una columna nueva al final de la hoja.
+        - Para cada socio: si la celda de esa columna ya dice "J", se
+          deja intacta; si no, se escribe "P" o "A" según el cotejo
+          (con el mismo color semáforo que usa el resto de la app).
+
+    Al final, agrega (o reemplaza, si ya existían de una corrida
+    anterior) dos pestañas en el MISMO archivo: "No Encontrados" y
+    "Ambiguos", con el detalle mes por mes para revisión manual.
+
+    Devuelve un FillResult con el resumen de lo que se hizo, para
+    mostrárselo al usuario.
+    """
+    columns_created: List[str] = []
+    columns_updated: List[str] = []
+    no_encontrados_por_mes: Dict[str, List[Dict[str, object]]] = {}
+    ambiguos_por_mes: Dict[str, List[Dict[str, object]]] = {}
+    celdas_escritas = 0
+    celdas_respetadas_j = 0
+
+    month_labels_order: List[str] = []
+
+    for month_label, zoom_records in months:
+        month_labels_order.append(month_label)
+        bare_month = extract_month_name_only(month_label) or month_label
+
+        existing = sheet_info.month_columns.get(bare_month)
+        if existing is not None:
+            col, header_text = existing
+            columns_updated.append(header_text)
+        else:
+            col = sheet_info.next_free_col
+            header_cell = sheet_info.sheet.cell(row=1, column=col, value=bare_month)
+            header_cell.font = Font(bold=True)
+            sheet_info.month_columns[bare_month] = (col, bare_month)
+            sheet_info.next_free_col += 1
+            columns_created.append(bare_month)
+
+        resultado, no_encontrados, ambiguos = match_zoom_to_roster(
+            zoom_records, sheet_info.roster_records, threshold_minutes
+        )
+        no_encontrados_por_mes[month_label] = no_encontrados
+        ambiguos_por_mes[month_label] = ambiguos
+
+        # resultado[i] corresponde exactamente a sheet_info.roster_records[i]
+        # (match_zoom_to_roster conserva el orden), que a su vez corresponde
+        # a sheet_info.row_numbers[i] — por eso se puede recorrer en paralelo.
+        for idx, row_number in enumerate(sheet_info.row_numbers):
+            cell = sheet_info.sheet.cell(row=row_number, column=col)
+            current = str(cell.value).strip().upper() if cell.value is not None else ""
+            if current == "J":
+                celdas_respetadas_j += 1
+                continue  # Inasistencia justificada: nunca se sobrescribe.
+
+            nuevo_valor = resultado[idx]["Asistencia"]  # "P" o "A"
+            cell.value = nuevo_valor
+            cell.alignment = Alignment(horizontal="center")
+            if nuevo_valor == "P":
+                cell.fill = _FILL_PRESENTE
+                cell.font = _FONT_PRESENTE
+            else:
+                cell.fill = _FILL_AUSENTE
+                cell.font = _FONT_AUSENTE
+            celdas_escritas += 1
+
+    # --- Pestañas de revisión: se eliminan primero si ya existían (de una
+    # corrida anterior), para que la actualización sea idempotente y no
+    # vaya acumulando pestañas duplicadas cada vez que se rellena. ---
+    for title in ("No Encontrados", "Ambiguos"):
+        if title in sheet_info.workbook.sheetnames:
+            sheet_info.workbook.remove(sheet_info.workbook[title])
+
+    _write_review_sheet(
+        sheet_info.workbook, "No Encontrados", month_labels_order, no_encontrados_por_mes,
+        empty_message="No hubo participantes sin encontrar en ningún mes.",
+        table_name="TablaNoEncontradosRelleno",
+    )
+    _write_review_sheet(
+        sheet_info.workbook, "Ambiguos", month_labels_order, ambiguos_por_mes,
+        empty_message="No hubo participantes ambiguos en ningún mes.",
+        table_name="TablaAmbiguosRelleno",
+    )
+
+    return FillResult(
+        columns_created=columns_created,
+        columns_updated=columns_updated,
+        no_encontrados_por_mes=no_encontrados_por_mes,
+        ambiguos_por_mes=ambiguos_por_mes,
+        celdas_escritas=celdas_escritas,
+        celdas_respetadas_j=celdas_respetadas_j,
+    )
