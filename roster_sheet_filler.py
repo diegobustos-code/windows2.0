@@ -36,6 +36,9 @@ from typing import Dict, List, Optional, Tuple
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font
+from openpyxl.utils import get_column_letter
+from openpyxl.utils.cell import range_boundaries
+from openpyxl.worksheet.table import AutoFilter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from excel_exporter import _FILL_AUSENTE, _FILL_PRESENTE, _FONT_AUSENTE, _FONT_PRESENTE, _write_review_sheet
@@ -74,6 +77,43 @@ class FillResult:
     ambiguos_por_mes: Dict[str, List[Dict[str, object]]]
     celdas_escritas: int
     celdas_respetadas_j: int
+
+
+def _repair_sheet_tables(ws: Worksheet, last_col: int, last_row: int) -> None:
+    """
+    Repara un problema heredado de algunos listados (típicamente los
+    exportados desde Google Sheets a .xlsx): la hoja trae una Tabla de
+    Excel (con sus filtros y su formato de franjas de color) cuyo rango
+    NO coincide con el autoFiltro "suelto" a nivel de hoja, y a la Tabla
+    le falta su propio autoFiltro interno. Ese desajuste es justamente lo
+    que hace que, al abrir el archivo en Excel, aparezca el aviso de
+    "hemos encontrado un problema con el contenido" y Excel termine
+    quitando la función de Tabla al reparar el archivo.
+
+    Esta función deja cada Tabla de la hoja con un rango consistente
+    (expandido si hace falta para cubrir alguna columna de mes nueva que
+    se haya agregado) y su propio autoFiltro interno sincronizado, y
+    quita el autoFiltro suelto de la hoja para que no quede duplicado ni
+    desalineado con la Tabla.
+    """
+    if not ws.tables:
+        return
+
+    for table in ws.tables.values():
+        min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+        new_max_col = max(max_col, last_col)
+        new_max_row = max(max_row, last_row)
+        if new_max_col != max_col or new_max_row != max_row:
+            start = f"{get_column_letter(min_col)}{min_row}"
+            end = f"{get_column_letter(new_max_col)}{new_max_row}"
+            table.ref = f"{start}:{end}"
+        if table.autoFilter is None or table.autoFilter.ref != table.ref:
+            table.autoFilter = AutoFilter(ref=table.ref)
+
+    # El filtro ya queda definido dentro de cada Tabla; un autoFiltro de
+    # hoja aparte (que además en estos archivos suele apuntar a un rango
+    # viejo y más chico) sobra y es la causa del archivo "dañado".
+    ws.auto_filter.ref = None
 
 
 def load_roster_sheet_for_fill(filepath: str) -> RosterSheetInfo:
@@ -302,6 +342,14 @@ def fill_roster_sheet(
                 cell.fill = _FILL_AUSENTE
                 cell.font = _FONT_AUSENTE
             celdas_escritas += 1
+
+    # --- Deja cualquier Tabla de Excel presente en la hoja (franjas de
+    # color, filtros) con un rango y un autoFiltro consistentes, cubriendo
+    # también las columnas de mes nuevas que se hayan agregado recién.
+    # Evita el aviso de "archivo dañado" que aparece en algunos listados
+    # (típicamente los exportados desde Google Sheets). ---
+    last_row_used = max(sheet_info.row_numbers) if sheet_info.row_numbers else 1
+    _repair_sheet_tables(sheet_info.sheet, sheet_info.next_free_col - 1, last_row_used)
 
     # --- Pestañas de revisión: se eliminan primero si ya existían (de una
     # corrida anterior), para que la actualización sea idempotente y no
