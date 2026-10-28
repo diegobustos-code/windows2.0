@@ -8,6 +8,7 @@ columnas numéricas para la duración, columna de Asistencia (P/A) con color
 tipo semáforo, y ancho de columna ajustado automáticamente.
 """
 
+from copy import copy
 from typing import Dict, List, Optional
 
 from openpyxl import Workbook
@@ -17,11 +18,40 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 
 COLUMNS = ["Nombre", "Apellido", "Sede", "Duración (minutos)", "Asistencia"]
 
-# Colores estilo "semáforo" para la columna Asistencia (P = Presente, A = Ausente)
-_FILL_PRESENTE = PatternFill(start_color="FFC6EFCE", end_color="FFC6EFCE", fill_type="solid")
-_FONT_PRESENTE = Font(color="FF006100", bold=True)
+# Formato de las celdas de asistencia (todo en negrita):
+#   P = Presente  -> letra verde, SIN relleno propio (se conserva el relleno original)
+#   A = Ausente   -> letra roja fuerte sobre relleno rojo suave
+#   J = Justificada -> letra naranja sobre relleno amarillo
+_FONT_PRESENTE = Font(color="FF008000", bold=True)
 _FILL_AUSENTE = PatternFill(start_color="FFFFC7CE", end_color="FFFFC7CE", fill_type="solid")
-_FONT_AUSENTE = Font(color="FF9C0006", bold=True)
+_FONT_AUSENTE = Font(color="FFC00000", bold=True)
+_FILL_JUSTIFICADA = PatternFill(start_color="FFFFFF00", end_color="FFFFFF00", fill_type="solid")
+_FONT_JUSTIFICADA = Font(color="FFE36C09", bold=True)
+
+
+def apply_status_style(cell, base_fill=None) -> bool:
+    """
+    Aplica el formato de asistencia a una celda cuyo valor sea P, A o J
+    (sin distinguir mayúsculas). Devuelve True si la celda tenía uno de
+    esos valores y fue formateada; False si no (no se toca nada).
+
+    `base_fill`: relleno "original" a conservar en las P (por ejemplo el
+    color de la fila de su sede). Si es None, la P queda sin relleno.
+    """
+    value = str(cell.value).strip().upper() if cell.value is not None else ""
+    if value not in ("P", "A", "J"):
+        return False
+    cell.alignment = Alignment(horizontal="center")
+    if value == "P":
+        cell.font = _FONT_PRESENTE
+        cell.fill = copy(base_fill) if base_fill is not None else PatternFill(fill_type=None)
+    elif value == "A":
+        cell.font = _FONT_AUSENTE
+        cell.fill = _FILL_AUSENTE
+    else:
+        cell.font = _FONT_JUSTIFICADA
+        cell.fill = _FILL_JUSTIFICADA
+    return True
 
 
 def export_to_excel(records: List[Dict[str, object]], filepath: str,
@@ -87,12 +117,7 @@ def export_to_excel(records: List[Dict[str, object]], filepath: str,
     for row_idx in range(2, last_row + 1):
         cell = ws.cell(row=row_idx, column=attendance_col_index)
         cell.alignment = Alignment(horizontal="center")
-        if cell.value == "P":
-            cell.fill = _FILL_PRESENTE
-            cell.font = _FONT_PRESENTE
-        elif cell.value == "A":
-            cell.fill = _FILL_AUSENTE
-            cell.font = _FONT_AUSENTE
+        apply_status_style(cell)
 
     # --- Ajuste automático de ancho de columnas ---
     for col_index, column_name in enumerate(COLUMNS, start=1):
@@ -173,12 +198,7 @@ def export_multi_month_to_excel(records: List[Dict[str, object]], month_labels: 
         for row_idx in range(2, last_row + 1):
             cell = ws.cell(row=row_idx, column=col_index)
             cell.alignment = Alignment(horizontal="center")
-            if cell.value == "P":
-                cell.fill = _FILL_PRESENTE
-                cell.font = _FONT_PRESENTE
-            elif cell.value == "A":
-                cell.fill = _FILL_AUSENTE
-                cell.font = _FONT_AUSENTE
+            apply_status_style(cell)
 
     # --- Ajuste automático de ancho de columnas ---
     for col_index, column_name in enumerate(columns, start=1):

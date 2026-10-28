@@ -41,7 +41,9 @@ from openpyxl.utils.cell import range_boundaries
 from openpyxl.worksheet.table import AutoFilter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from excel_exporter import _FILL_AUSENTE, _FILL_PRESENTE, _FONT_AUSENTE, _FONT_PRESENTE, _write_review_sheet
+from copy import copy
+
+from excel_exporter import _write_review_sheet, apply_status_style
 from multi_month_processor import extract_month_name_only
 from roster_matcher import _detect_full_format, _detect_simple_format, match_zoom_to_roster
 
@@ -67,6 +69,12 @@ class RosterSheetInfo:
     # cual está escrito en el archivo, ej. "Octubre (extraordinaria)")
     month_columns: Dict[str, Tuple[int, str]] = field(default_factory=dict)
     next_free_col: int = 1
+    # Columna (1-based) de la que se toma el relleno "original" de cada fila
+    # (el color de su sede) para conservarlo en las celdas P.
+    base_col: int = 1
+    # Columnas (1-based) que NO se reformatean: las fijas (Nombre/Apellido/
+    # Sede) y cualquier columna "Sede"/"Sedes" suelta.
+    skip_cols: set = field(default_factory=set)
 
 
 @dataclass
@@ -205,6 +213,13 @@ def load_roster_sheet_for_fill(filepath: str) -> RosterSheetInfo:
 
     next_free_col = last_header_col_0based + 2  # +1 para pasar a 1-based, +1 para la siguiente libre
 
+    skip_cols = {c + 1 for c in fixed_cols}
+    for idx, h in enumerate(headers):
+        if h.strip().lower() in ("sede", "sedes"):
+            skip_cols.add(idx + 1)
+    base_col = (chosen_cols["Nombres"] if chosen_cols["Nombres"] is not None
+                else chosen_cols["Apellido Paterno"]) + 1
+
     # --- Leer las filas de socios (Nombre/Apellido/Sede) y su número de
     # fila REAL en la hoja (necesario para escribir después en la celda
     # correcta de cada socio, incluso si hay filas vacías de por medio) ---
@@ -262,6 +277,8 @@ def load_roster_sheet_for_fill(filepath: str) -> RosterSheetInfo:
         roster_records=roster_records,
         month_columns=month_columns,
         next_free_col=next_free_col,
+        base_col=base_col,
+        skip_cols=skip_cols,
     )
 
 
@@ -332,16 +349,21 @@ def fill_roster_sheet(
                 celdas_respetadas_j += 1
                 continue  # Inasistencia justificada: nunca se sobrescribe.
 
-            nuevo_valor = resultado[idx]["Asistencia"]  # "P" o "A"
-            cell.value = nuevo_valor
-            cell.alignment = Alignment(horizontal="center")
-            if nuevo_valor == "P":
-                cell.fill = _FILL_PRESENTE
-                cell.font = _FONT_PRESENTE
-            else:
-                cell.fill = _FILL_AUSENTE
-                cell.font = _FONT_AUSENTE
+            cell.value = resultado[idx]["Asistencia"]  # "P" o "A"; el formato se aplica al final
             celdas_escritas += 1
+
+    # --- Formato de asistencia: se aplica a TODAS las celdas P/A/J de los
+    # socios (las recién escritas y las que ya estaban de meses anteriores,
+    # aunque vinieran con el formato viejo). Las P conservan el relleno
+    # original de su fila (el de la columna base); las A y J llevan el suyo.
+    # Se omiten las columnas fijas y las columnas "Sede"/"Sedes". ---
+    last_col = sheet_info.next_free_col - 1
+    for row_number in sheet_info.row_numbers:
+        base_fill = sheet_info.sheet.cell(row=row_number, column=sheet_info.base_col).fill
+        for col in range(1, last_col + 1):
+            if col in sheet_info.skip_cols:
+                continue
+            apply_status_style(sheet_info.sheet.cell(row=row_number, column=col), base_fill)
 
     # --- Deja cualquier Tabla de Excel presente en la hoja (franjas de
     # color, filtros) con un rango y un autoFiltro consistentes, cubriendo
