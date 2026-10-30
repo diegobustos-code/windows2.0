@@ -105,6 +105,7 @@ KNOWN_SEDES: Dict[str, List[str]] = {
     "Quilpué": ["quilpue"],
     "Quillota": ["quillota"],
     "Rancagua": ["rancagua"],
+    "Ovalle": ["ovalle"],
     "Talca": ["talca"],
     "Curicó": ["curico"],
     "San Fernando": ["san fernando"],

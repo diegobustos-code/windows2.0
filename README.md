@@ -68,12 +68,19 @@ orden de decisión es:
 4. **Ortografía parecida e iniciales.** Un error de tipeo en el apellido
    ("gonzales" por "Gonzalez", "Irribarren" por "Iribarren") o iniciales
    ("Ana Carolina RM" por Rojas Millán), siempre junto a un nombre que coincida.
+   Esto también se prueba cuando el apellido escrito existe en el listado pero
+   con otro nombre de pila: "Isaac Valdebenito" se asigna a Isaac Valdevenito
+   (Ñuñoa) y no queda pendiente por Macarena Valdebenito.
    También acepta pequeñas diferencias en el nombre de pila ("Gisselle" por
    "Giselle").
 5. **Desempate por sede.** Si hay empate, se usa la sede que la persona escribió
    en Zoom ("Maria Fernanda Cpech Viña" → socia de Viña del Mar).
 6. **Nombre escrito todo junto.** "Mariateresacortes" se separa en María Teresa
-   Cortés cuando todas las partes existen en el listado.
+   Cortés, y "Francisco MarinNaritelli" en Marin Naritelli, cuando todas las
+   partes existen en el listado. Se prueba también cuando la primera lectura
+   dio una asignación débil o ambigua (solo por nombre de pila, por ejemplo).
+   Además se entienden algunos apodos: Maite (María Teresa), Pancho, Nacho,
+   Pepe, Lucho, Kike y Memo.
 7. **Si nada funciona**, el participante queda en *No Encontrados* o *Ambiguos*.
    Nunca se adivina entre varias personas.
 
@@ -82,7 +89,8 @@ Otras reglas:
 - Es **Presente (P)** quien acumula al menos el umbral de minutos (30 por
   defecto, editable en pantalla).
 - La sede se detecta desde el nombre de Zoom con una lista de sedes y variantes
-  ("sn bdo", "pto montt", "pte alto", "viña", "valpo", "losangeles", entre otras).
+  ("sn bdo", "pto montt", "pte alto", "viña", "valpo", "losangeles", "ovalle",
+  entre otras).
   Si aparece una sede nueva, se agrega en `KNOWN_SEDES` de `csv_processor.py`.
 
 ---
@@ -145,6 +153,20 @@ El orden de las columnas no importa; se detectan por el título del encabezado.
 ## Historial de cambios
 
 Del más reciente al más antiguo.
+
+### Ajustes tras probar julio a octubre
+- Rellenar Listado: casilla "Cambiar J a P si el Zoom dice que estuvo
+  presente" (activada de fábrica). Corrige las J puestas por error y lo anota
+  en *Revisar diferencias*. Una J con Zoom ausente siempre se conserva.
+- Nombres escritos junto con otra palabra ("Francisco MarinNaritelli") ahora
+  se separan aunque el nombre de pila solo ya calzara con otro socio.
+- Apellido con otra ortografía y mismo nombre de pila ("Isaac Valdebenito",
+  "Aldo Villarroel"), aunque exista otro socio con el apellido exacto.
+- Sede **Ovalle** agregada a la lista de sedes conocidas (antes quedaba sin
+  sede y fallaban los desempates).
+- Apodos comunes (Maite, Pancho, Nacho, Pepe, Lucho, Kike, Memo).
+- Archivos modificados: `roster_matcher.py`, `csv_processor.py`,
+  `roster_sheet_filler.py`, `roster_fill_window.py`.
 
 ### Cotejo más intensivo y exportación unificada
 - Cotejo por aproximación: nombre escrito junto, apellido con otra ortografía,

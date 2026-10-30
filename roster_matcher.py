@@ -382,6 +382,19 @@ def _evidencia_nombre(entry: Dict[str, object], zoom_tokens: set) -> str:
     return ""
 
 
+# Apodos muy comunes -> nombres formales. Se AGREGAN a lo que escribió la
+# persona (no lo reemplazan), y solo ayudan cuando el apellido calza.
+_APODOS = {
+    "maite": {"maria", "teresa"},
+    "pancho": {"francisco"},
+    "nacho": {"ignacio"},
+    "pepe": {"jose"},
+    "lucho": {"luis"},
+    "kike": {"enrique"},
+    "memo": {"guillermo"},
+}
+
+
 def _split_joined_token(token: str, vocab: set) -> Optional[List[str]]:
     """Si `token` es una palabra larga que NO existe en el listado pero se
     puede armar pegando palabras que sí existen (ej. "mariateresacortes" ->
@@ -525,6 +538,35 @@ def match_zoom_to_roster_detailed(
             idxs = top
         return None, "", idxs
 
+    def _fuzzy_apellido(zoom_tokens: set, zoom_sede: str):
+        """Apellido con otra ortografía (o iniciales), SIEMPRE junto a un
+        nombre de pila que coincida exacto. Devuelve (estado, idx, método,
+        candidatos) o None si no hay ningún candidato."""
+        fuzzy = []
+        for idx, entry in enumerate(entries):
+            apell = entry["_paterno"] | entry["_materno"]
+            casi = [
+                zt for zt in zoom_tokens
+                if zt not in entry["_nombres"] and any(_tokens_similar(zt, a) for a in apell)
+            ]
+            iniciales = bool(entry["_inic"]) and entry["_inic"] in zoom_tokens
+            if not casi and not iniciales:
+                continue
+            hits = len(entry["_nombres"] & zoom_tokens)
+            if hits == 0:
+                continue
+            fuzzy.append((hits, idx, "iniciales del apellido" if (iniciales and not casi) else "apellido con ortografía parecida"))
+        if not fuzzy:
+            return None
+        mejor = max(h for h, _i, _m in fuzzy)
+        top_f = [(i, m) for h, i, m in fuzzy if h == mejor]
+        idxs_f = [i for i, _m in top_f]
+        idx, nota, resto = _desempatar(idxs_f, zoom_sede, zoom_tokens)
+        if idx is not None:
+            met = dict(top_f)[idx]
+            return "ok", idx, met + (", " + nota if nota else ""), resto
+        return "ambiguo", None, "", resto
+
     def _resolver(zoom_tokens: set, zoom_sede: str):
         """Devuelve (estado, idx, método, candidatos) con estado 'ok',
         'ambiguo' o 'no'."""
@@ -554,6 +596,15 @@ def match_zoom_to_roster_detailed(
                 if idx is not None:
                     return "ok", idx, "apellido repetido, " + nota, resto
                 return "ambiguo", None, "", resto
+
+            # Nadie con ese apellido coincide en el nombre. Antes de
+            # conformarse con "solo apellido", se mira si hay un socio con el
+            # MISMO nombre de pila y el apellido escrito algo distinto
+            # ("Isaac Valdebenito" -> "Isaac ... Valdevenito"). Solo se acepta
+            # si queda uno claro; si no, se sigue con la lógica de siempre.
+            fz = _fuzzy_apellido(zoom_tokens, zoom_sede)
+            if fz is not None and fz[0] == "ok":
+                return fz
 
             # Nadie coincide en el nombre: solo el apellido. Se asigna
             # únicamente si ese apellido lo lleva UN solo socio y la sede
@@ -593,29 +644,9 @@ def match_zoom_to_roster_detailed(
 
         # 2a) Apellido con otra ortografía o iniciales, SIEMPRE junto a un
         #     nombre que coincida exacto
-        fuzzy = []
-        for idx, entry in enumerate(entries):
-            apell = entry["_paterno"] | entry["_materno"]
-            casi = [
-                zt for zt in zoom_tokens
-                if zt not in entry["_nombres"] and any(_tokens_similar(zt, a) for a in apell)
-            ]
-            iniciales = bool(entry["_inic"]) and entry["_inic"] in zoom_tokens
-            if not casi and not iniciales:
-                continue
-            hits = len(entry["_nombres"] & zoom_tokens)
-            if hits == 0:
-                continue
-            fuzzy.append((hits, idx, "iniciales del apellido" if (iniciales and not casi) else "apellido con ortografía parecida"))
-        if fuzzy:
-            mejor = max(h for h, _i, _m in fuzzy)
-            top_f = [(i, m) for h, i, m in fuzzy if h == mejor]
-            idxs_f = [i for i, _m in top_f]
-            idx, nota, resto = _desempatar(idxs_f, zoom_sede, zoom_tokens)
-            if idx is not None:
-                met = dict(top_f)[idx]
-                return "ok", idx, met + (", " + nota if nota else ""), resto
-            return "ambiguo", None, "", resto
+        fz = _fuzzy_apellido(zoom_tokens, zoom_sede)
+        if fz is not None:
+            return fz
 
         # 2b) Empate de nombre de pila: se intenta desempatar por sede
         if nombre_top:
@@ -632,12 +663,20 @@ def match_zoom_to_roster_detailed(
 
     for zr in zoom_records:
         zoom_tokens = set(tokenize(str(zr.get("Nombre", ""))))
+        for apodo, formal in _APODOS.items():
+            if apodo in zoom_tokens:
+                zoom_tokens |= formal
         zoom_sede = str(zr.get("Sede", "") or "")
 
         estado, idx, metodo, cands = _resolver(zoom_tokens, zoom_sede)
 
-        if estado == "no":
-            # 3) ¿Nombre escrito todo junto? ("mariateresacortes")
+        if estado != "ok" or metodo:
+            # 3) ¿Nombre escrito todo junto? ("mariateresacortes",
+            #    "Francisco MarinNaritelli"). Se prueba también cuando el
+            #    primer intento quedó ambiguo (ej. solo calzaba el nombre
+            #    de pila): si separado resuelve a una sola persona, se usa.
+            estado_prev, cands_prev = estado, cands
+            prev = (estado, idx, metodo, cands)
             reemplazos = set()
             for tok in zoom_tokens:
                 partes = _split_joined_token(tok, vocab)
@@ -651,6 +690,15 @@ def match_zoom_to_roster_detailed(
                 estado, idx, metodo, cands = _resolver(nuevos, zoom_sede)
                 if estado == "ok":
                     metodo = "nombre escrito todo junto" + (", " + metodo if metodo else "")
+                elif estado_prev == "ok":
+                    # La separación no mejoró nada: se queda la asignación original.
+                    estado, idx, metodo, cands = prev
+                elif estado_prev == "ambiguo":
+                    # Sigue sin resolverse: se conserva el resultado ambiguo
+                    # original (o el nuevo si acota más los candidatos).
+                    estado = "ambiguo"
+                    if not cands or (cands_prev and len(cands_prev) < len(cands)):
+                        cands = cands_prev
 
         if estado == "no":
             no_encontrados.append(zr)
