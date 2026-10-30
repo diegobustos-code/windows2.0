@@ -176,6 +176,14 @@ class RosterFillWindow(tk.Toplevel):
             bg=COLOR_BG, fg="#7A828B", font=("Segoe UI", 8),
         ).pack(side=tk.LEFT, padx=(8, 0))
 
+        # --- Qué hacer con las J si el Zoom dice que sí estuvo ---
+        self.cambiar_j_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            main, variable=self.cambiar_j_var, bg=COLOR_BG, activebackground=COLOR_BG,
+            font=("Segoe UI", 10), anchor="w", justify="left",
+            text="Cambiar J a P si el Zoom dice que estuvo presente (se anota en \"Revisar diferencias\")",
+        ).pack(fill=tk.X, pady=(0, 12))
+
         # --- Generar ---
         make_flat_button(
             main, "Rellenar y guardar copia actualizada", self._generate, COLOR_TEAL
@@ -362,7 +370,10 @@ class RosterFillWindow(tk.Toplevel):
 
         months = [(e["label"], e["records"]) for e in self.month_entries]
         try:
-            result = fill_roster_sheet(self.sheet_info, months, threshold)
+            result = fill_roster_sheet(
+                self.sheet_info, months, threshold,
+                cambiar_j_si_presente=self.cambiar_j_var.get(),
+            )
         except Exception as e:
             show_popup(self, "Error al rellenar el listado", str(e), success=False)
             return
@@ -394,6 +405,10 @@ class RosterFillWindow(tk.Toplevel):
             f"{result.celdas_escritas} celdas rellenadas, "
             f"{result.celdas_respetadas_j} respetadas por tener \"J\"."
         )
+        if result.celdas_j_cambiadas:
+            resumen.append(
+                f"{result.celdas_j_cambiadas} J cambiadas a P porque el Zoom las marca presentes."
+            )
         if total_no_encontrados or total_ambiguos:
             resumen.append(
                 f"Pendientes: {total_no_encontrados} no encontrado(s) y {total_ambiguos} "

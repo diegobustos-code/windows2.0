@@ -104,7 +104,7 @@ Para el listado que ya llevas a mano, al que le agregas una columna por mes y
 escribes "J" en las ausencias justificadas. El programa **rellena** la columna
 del mes en vez de generar un listado nuevo.
 
-- **Respeta las J**: nunca se sobrescriben.
+- **Respeta las J** por defecto, con una excepción: la casilla **"Cambiar J a P si el Zoom dice que estuvo presente"** (activada de fábrica) corrige las J puestas por error cuando el Zoom muestra que la persona sí cumplió el mínimo de minutos. Cada cambio queda anotado en la pestaña "Revisar diferencias". Si la desmarcas, todas las J se mantienen. Una J con Zoom ausente siempre se conserva.
 - Reconoce el mes aunque el encabezado tenga texto extra (`Octubre
   (extraordinaria)`, `Asistencia Agosto`). Si el mes no tiene columna, la crea al
   final.
@@ -123,7 +123,7 @@ del mes en vez de generar un listado nuevo.
 
 Pestañas que agrega: *No Encontrados*, *Ambiguos*, *Cotejos aproximados* y
 **Revisar diferencias**. Esta última lista a quienes el Zoom marca Presentes pero
-el listado tenía como **J** (la J se respeta) o **A**, y a quienes pasaron de
+el listado tenía como **J** (se respeta o se cambia a P según la casilla anterior) o **A**, y a quienes pasaron de
 **P a A**, con sus minutos y qué hizo el programa, para corregir a mano si
 corresponde. Ojo: solo las J están protegidas; una A o una P ya escrita se
 actualiza al resultado de Zoom, pero queda anotada en esa pestaña.

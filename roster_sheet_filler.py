@@ -88,6 +88,7 @@ class FillResult:
     ambiguos_por_mes: Dict[str, List[Dict[str, object]]]
     celdas_escritas: int
     celdas_respetadas_j: int
+    celdas_j_cambiadas: int = 0
     aproximados_por_mes: Dict[str, List[Dict[str, object]]] = field(default_factory=dict)
     # Casos donde lo que ya figuraba en el listado (J, A o P) no coincide con
     # lo que dice el Zoom; se listan en la pestaña "Revisar diferencias".
@@ -296,6 +297,7 @@ def fill_roster_sheet(
     sheet_info: RosterSheetInfo,
     months: List[Tuple[str, List[Dict[str, object]]]],
     threshold_minutes: float = 30.0,
+    cambiar_j_si_presente: bool = False,
 ) -> FillResult:
     """
     Rellena, en la hoja ya cargada por load_roster_sheet_for_fill, la
@@ -308,7 +310,9 @@ def fill_roster_sheet(
           TAL CUAL está (no se toca su encabezado).
         - Si no existe, se agrega una columna nueva al final de la hoja.
         - Para cada socio: si la celda de esa columna ya dice "J", se
-          deja intacta; si no, se escribe "P" o "A" según el cotejo
+          deja intacta (salvo que `cambiar_j_si_presente` esté activado y
+          el Zoom lo marque Presente: entonces pasa a "P", y el cambio
+          queda anotado en "Revisar diferencias"); si no, se escribe "P" o "A" según el cotejo
           (con el mismo color semáforo que usa el resto de la app).
 
     Al final, agrega (o reemplaza, si ya existían de una corrida
@@ -328,6 +332,7 @@ def fill_roster_sheet(
     diferencias: List[Dict[str, object]] = []
     celdas_escritas = 0
     celdas_respetadas_j = 0
+    celdas_j_cambiadas = 0
 
     month_labels_order: List[str] = []
 
@@ -375,14 +380,18 @@ def fill_roster_sheet(
                     "Según Zoom": nuevo,
                     "Minutos en Zoom": resultado[idx]["Duración (minutos)"],
                     "Qué hizo el programa": (
-                        "Se respetó la J (no se modificó la celda)" if current == "J"
+                        "Se respetó la J (no se modificó la celda)"
+                        if current == "J" and not cambiar_j_si_presente
                         else f"Se cambió de {current} a {nuevo}"
                     ),
                 })
 
             if current == "J":
-                celdas_respetadas_j += 1
-                continue  # Inasistencia justificada: nunca se sobrescribe.
+                if cambiar_j_si_presente and nuevo == "P":
+                    celdas_j_cambiadas += 1  # J por error: el Zoom lo marca presente
+                else:
+                    celdas_respetadas_j += 1
+                    continue  # Inasistencia justificada: no se sobrescribe.
 
             cell.value = nuevo  # el formato se aplica al final
             celdas_escritas += 1
@@ -445,6 +454,7 @@ def fill_roster_sheet(
         ambiguos_por_mes=ambiguos_por_mes,
         celdas_escritas=celdas_escritas,
         celdas_respetadas_j=celdas_respetadas_j,
+        celdas_j_cambiadas=celdas_j_cambiadas,
         aproximados_por_mes=aproximados_por_mes,
         diferencias=diferencias,
     )
