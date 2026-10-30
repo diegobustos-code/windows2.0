@@ -83,6 +83,7 @@ STOPWORDS = {
     "iphone", "ipad", "galaxy", "samsung", "xiaomi", "huawei", "android",
     "moto", "macbook", "note", "ultra", "pro", "plus", "mini", "windows",
     "pc", "tablet", "of",
+    "cpech",
 }
 
 
@@ -323,82 +324,353 @@ def _score_by_nombre(entry: Dict[str, object], zoom_tokens: set) -> Optional[Tup
     return (raw_score, jaccard)
 
 
+# ---------------------------------------------------------------------------
+# Herramientas del cotejo "intensivo" (se usan SOLO cuando el cotejo clásico
+# no logra asignar a alguien: no encontrado o ambiguo). Nunca cambian una
+# asignación que el cotejo clásico ya hacía de forma única.
+# ---------------------------------------------------------------------------
+def _edit_distance(a: str, b: str, limit: int) -> int:
+    """Distancia de edición (Levenshtein) con corte temprano: si supera
+    `limit` devuelve limit + 1."""
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        if min(cur) > limit:
+            return limit + 1
+        prev = cur
+    return prev[-1]
+
+
+def _tokens_similar(a: str, b: str) -> bool:
+    """True si dos palabras son casi iguales (un error de tipeo: tilde
+    mal puesta, letra cambiada, letra de más o de menos). Solo palabras de
+    5 letras o más, para no confundir apellidos cortos distintos."""
+    if a == b or len(a) < 5 or len(b) < 5:
+        return False
+    limit = 2 if min(len(a), len(b)) >= 10 else 1
+    return _edit_distance(a, b, limit) <= limit
+
+
+def _sede_key(text: str) -> str:
+    key = re.sub(r"[^a-z\s]", " ", _normalize(text))
+    key = re.sub(r"\bsede\b", " ", key)
+    return re.sub(r"\s+", " ", key).strip()
+
+
+def _same_sede(zoom_sede: str, roster_sede: str) -> bool:
+    a, b = _sede_key(zoom_sede), _sede_key(roster_sede)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    return len(a) >= 4 and len(b) >= 4 and (a in b or b in a)
+
+
+def _evidencia_nombre(entry: Dict[str, object], zoom_tokens: set) -> str:
+    """"exacto" si alguna palabra del nombre de Zoom coincide con un nombre
+    de pila del socio; "parecido" si solo coincide con una letra distinta
+    (ej. gisselle/giselle, yngrid/ingrid); "" si no hay ninguna."""
+    nombres = entry["_nombres"]
+    if nombres & zoom_tokens:
+        return "exacto"
+    if any(_tokens_similar(zt, n) for zt in zoom_tokens for n in nombres):
+        return "parecido"
+    return ""
+
+
+def _split_joined_token(token: str, vocab: set) -> Optional[List[str]]:
+    """Si `token` es una palabra larga que NO existe en el listado pero se
+    puede armar pegando palabras que sí existen (ej. "mariateresacortes" ->
+    maria + teresa + cortes), devuelve esas partes (la segmentación con
+    menos partes). Si no, None."""
+    n = len(token)
+    if n < 8 or token in vocab:
+        return None
+    best: List[Optional[List[str]]] = [None] * (n + 1)
+    best[0] = []
+    for i in range(3, n + 1):
+        for j in range(0, i - 2):
+            if best[j] is None:
+                continue
+            part = token[j:i]
+            if part in vocab:
+                cand = best[j] + [part]
+                if best[i] is None or len(cand) < len(best[i]):
+                    best[i] = cand
+    parts = best[n]
+    if parts and len(parts) >= 2 and max(len(p) for p in parts) >= 4:
+        return parts
+    return None
+
+
 def match_zoom_to_roster(
     zoom_records: List[Dict[str, object]],
     roster_records: List[Dict[str, str]],
     attendance_threshold: float = 30.0,
 ) -> Tuple[List[Dict[str, object]], List[Dict[str, object]], List[Dict[str, object]]]:
     """
+    Igual que siempre: devuelve (resultado, no_encontrados, ambiguos).
+    Internamente usa match_zoom_to_roster_detailed (que además informa qué
+    asignaciones no fueron "exactas"); ver esa función para el detalle.
+    """
+    resultado, no_encontrados, ambiguos, _aprox = match_zoom_to_roster_detailed(
+        zoom_records, roster_records, attendance_threshold
+    )
+    return resultado, no_encontrados, ambiguos
+
+
+def match_zoom_to_roster_detailed(
+    zoom_records: List[Dict[str, object]],
+    roster_records: List[Dict[str, str]],
+    attendance_threshold: float = 30.0,
+) -> Tuple[
+    List[Dict[str, object]], List[Dict[str, object]],
+    List[Dict[str, object]], List[Dict[str, object]],
+]:
+    """
     Coteja los participantes de Zoom contra el listado oficial de socios.
 
-    Devuelve una tupla (resultado, no_encontrados, ambiguos):
+    Devuelve (resultado, no_encontrados, ambiguos, aproximados):
 
-      - resultado: una fila POR CADA SOCIO del listado oficial, con las
-        llaves "Nombre", "Apellido", "Sede", "Duración (minutos)" y
-        "Asistencia" (P/A), lista para mostrarse en la tabla / exportarse
-        igual que el resto de la aplicación.
+      - resultado: una fila POR CADA SOCIO del listado oficial, EN EL MISMO
+        ORDEN del listado, con las llaves "Nombre", "Apellido", "Sede",
+        "Duración (minutos)" y "Asistencia" (P/A).
 
       - no_encontrados: participantes de Zoom que no coincidieron con
-        ningún socio del listado oficial (para revisión manual).
+        ningún socio (para revisión manual).
 
-      - ambiguos: participantes de Zoom que coincidieron por igual con
-        dos o más socios, por lo que no se pudo determinar automáticamente
-        a cuál asignarle la asistencia (para revisión manual).
+      - ambiguos: participantes de Zoom que siguen coincidiendo con dos o
+        más socios tras todos los desempates. Cada uno trae además la llave
+        "Posibles" con los socios candidatos, para decidir a mano.
+
+      - aproximados: asignaciones que el programa SÍ hizo pero que no fueron
+        por apellido exacto (solo nombre único, apellido con otra
+        ortografía, nombre escrito todo junto, desempate por sede...).
+        Se entregan para que se puedan revisar; ya están contadas en
+        "resultado".
+
+    Orden de decisión para cada participante de Zoom:
+      1. Por apellido (paterno o materno) exacto -> el clásico.
+      2. Si nadie coincide por apellido: por nombre de pila si es único;
+         si no, por apellido con ortografía parecida / iniciales + nombre.
+      3. Si hay empate: se desempata con la SEDE que la persona escribió en
+         Zoom, y luego con palabras de ortografía parecida.
+      4. Si sigue sin haber candidatos: se prueba separando un nombre
+         escrito todo junto ("mariateresacortes").
+      5. Si todo falla -> "no encontrado" o "ambiguo" (nunca se adivina).
     """
-    # Preparar los socios con sus conjuntos de palabras (tokens)
     entries = []
+    vocab: set = set()
+    nombre_vocab: set = set()
     for r in roster_records:
-        paterno = set(tokenize(r["Apellido Paterno"]))
-        materno = set(tokenize(r["Apellido Materno"]))
+        paterno_list = tokenize(r["Apellido Paterno"])
+        materno_list = tokenize(r["Apellido Materno"])
+        if not materno_list and len(paterno_list) == 2:
+            # Listado con el apellido completo en UNA columna ("RIFFO VEGA"):
+            # se separa en paterno + materno para que quien escribe solo un
+            # apellido en Zoom no quede en desventaja frente a quien tiene el
+            # mismo apellido repetido ("RIFFO RIFFO").
+            paterno_list, materno_list = [paterno_list[0]], [paterno_list[1]]
+        paterno = set(paterno_list)
+        materno = set(materno_list)
         nombres = set(tokenize(r["Nombres"]))
+        inic = ""
+        if paterno_list and materno_list:
+            inic = paterno_list[0][0] + materno_list[0][0]
+        elif len(paterno_list) >= 2:  # formato simple: ambos apellidos en una columna
+            inic = paterno_list[0][0] + paterno_list[1][0]
         entries.append({
             **r,
             "_paterno": paterno,
             "_materno": materno,
             "_nombres": nombres,
             "_all": paterno | materno | nombres,
+            "_inic": inic,
             "_duracion_total": 0.0,
             "_matched_zoom_names": [],
         })
+        vocab |= {t for t in (paterno | materno | nombres) if len(t) >= 3}
+        nombre_vocab |= nombres
 
-    no_encontrados: List[Dict[str, object]] = []
-    ambiguos: List[Dict[str, object]] = []
+    def _label(i: int) -> str:
+        e = entries[i]
+        full = f"{e['Nombres']} {e['Apellido Paterno']} {e['Apellido Materno']}"
+        full = re.sub(r"\s{2,}", " ", full).strip()
+        return f"{full} ({e['Sede']})"
 
-    for zr in zoom_records:
-        zoom_tokens = set(tokenize(str(zr.get("Nombre", ""))))
+    def _desempatar(idxs: List[int], zoom_sede: str, zoom_tokens: set):
+        """Intenta dejar UN solo socio entre los empatados. Devuelve
+        (idx_o_None, texto_del_desempate, candidatos_que_quedan)."""
+        if len(idxs) == 1:
+            return idxs[0], "", idxs
+        if zoom_sede:
+            por_sede = [i for i in idxs if _same_sede(zoom_sede, entries[i]["Sede"])]
+            if len(por_sede) == 1:
+                return por_sede[0], "desempatado por sede", por_sede
+            if len(por_sede) > 1:
+                idxs = por_sede
+        puntajes = [
+            sum(1 for zt in zoom_tokens for t in entries[i]["_all"] if _tokens_similar(zt, t))
+            for i in idxs
+        ]
+        mejor = max(puntajes)
+        if mejor > 0:
+            top = [i for i, p in zip(idxs, puntajes) if p == mejor]
+            if len(top) == 1:
+                return top[0], "desempatado por nombre parecido", top
+            idxs = top
+        return None, "", idxs
+
+    def _resolver(zoom_tokens: set, zoom_sede: str):
+        """Devuelve (estado, idx, método, candidatos) con estado 'ok',
+        'ambiguo' o 'no'."""
+        # 1) Por apellido exacto (cotejo clásico)
         candidates = []
         for idx, entry in enumerate(entries):
             s = _score(entry, zoom_tokens)
             if s is not None:
                 candidates.append((s, idx))
+        if candidates:
+            todos = [idx for _s, idx in candidates]
+            score_of = {idx: s for s, idx in candidates}
 
-        if not candidates:
-            # Nadie coincidió por apellido: se intenta la segunda fase,
-            # cotejando SOLO por nombre de pila (típico de alguien que en
-            # Zoom escribió nomás su nombre, sin apellido). Si ese nombre
-            # es único en el listado de socios, se asigna igual; si hay
-            # dos o más socios con ese mismo nombre, queda "ambiguo" más
-            # abajo (nunca se asigna a ciegas).
-            for idx, entry in enumerate(entries):
-                s = _score_by_nombre(entry, zoom_tokens)
-                if s is not None:
-                    candidates.append((s, idx))
+            # Evidencia de que el NOMBRE de pila también coincide (exacto o
+            # con una letra distinta). Entre quienes comparten el apellido,
+            # se prefiere a quien además coincide en el nombre.
+            evid = {i: _evidencia_nombre(entries[i], zoom_tokens) for i in todos}
+            grupo = [i for i in todos if evid[i] == "exacto"] or \
+                    [i for i in todos if evid[i] == "parecido"]
+            if grupo:
+                mejor = max(score_of[i] for i in grupo)
+                top = [i for i in grupo if score_of[i] == mejor]
+                base = "" if evid[top[0]] == "exacto" else "nombre con ortografía parecida"
+                if len(top) == 1:
+                    return "ok", top[0], base, top
+                idx, nota, resto = _desempatar(top, zoom_sede, zoom_tokens)
+                if idx is not None:
+                    return "ok", idx, "apellido repetido, " + nota, resto
+                return "ambiguo", None, "", resto
 
-        if not candidates:
+            # Nadie coincide en el nombre: solo el apellido. Se asigna
+            # únicamente si ese apellido lo lleva UN solo socio y la sede
+            # (si la escribió) no lo contradice; si no, queda pendiente.
+            if len(todos) == 1:
+                idx = todos[0]
+                choca = bool(zoom_sede) and not _same_sede(zoom_sede, entries[idx]["Sede"])
+                # Si en Zoom escribió un nombre de pila que SÍ existe en el
+                # listado pero no es el de este socio, es otra persona.
+                otro_nombre = any(
+                    t in nombre_vocab and t not in entries[idx]["_all"] for t in zoom_tokens
+                )
+                if not choca and not otro_nombre:
+                    return "ok", idx, "solo apellido (único en el listado)", todos
+            return "ambiguo", None, "", todos
+
+        # 2) Nadie coincide por apellido: solo nombre de pila
+        nombre_cands = []
+        for idx, entry in enumerate(entries):
+            s = _score_by_nombre(entry, zoom_tokens)
+            if s is not None:
+                nombre_cands.append((s, idx))
+        nombre_top: List[int] = []
+        if nombre_cands:
+            nombre_cands.sort(key=lambda c: c[0], reverse=True)
+            nscore = nombre_cands[0][0]
+            nombre_top = [idx for s, idx in nombre_cands if s == nscore]
+            if len(nombre_top) == 1:
+                extra = sorted(
+                    t for t in zoom_tokens
+                    if len(t) >= 4 and t not in vocab and t not in entries[nombre_top[0]]["_nombres"]
+                )
+                nota = "solo nombre (único en el listado)"
+                if extra:
+                    nota += "; revisar: en Zoom escribió además «" + " ".join(extra) + "», que no está en el listado"
+                return "ok", nombre_top[0], nota, nombre_top
+
+        # 2a) Apellido con otra ortografía o iniciales, SIEMPRE junto a un
+        #     nombre que coincida exacto
+        fuzzy = []
+        for idx, entry in enumerate(entries):
+            apell = entry["_paterno"] | entry["_materno"]
+            casi = [
+                zt for zt in zoom_tokens
+                if zt not in entry["_nombres"] and any(_tokens_similar(zt, a) for a in apell)
+            ]
+            iniciales = bool(entry["_inic"]) and entry["_inic"] in zoom_tokens
+            if not casi and not iniciales:
+                continue
+            hits = len(entry["_nombres"] & zoom_tokens)
+            if hits == 0:
+                continue
+            fuzzy.append((hits, idx, "iniciales del apellido" if (iniciales and not casi) else "apellido con ortografía parecida"))
+        if fuzzy:
+            mejor = max(h for h, _i, _m in fuzzy)
+            top_f = [(i, m) for h, i, m in fuzzy if h == mejor]
+            idxs_f = [i for i, _m in top_f]
+            idx, nota, resto = _desempatar(idxs_f, zoom_sede, zoom_tokens)
+            if idx is not None:
+                met = dict(top_f)[idx]
+                return "ok", idx, met + (", " + nota if nota else ""), resto
+            return "ambiguo", None, "", resto
+
+        # 2b) Empate de nombre de pila: se intenta desempatar por sede
+        if nombre_top:
+            idx, nota, resto = _desempatar(nombre_top, zoom_sede, zoom_tokens)
+            if idx is not None:
+                return "ok", idx, "solo nombre, " + nota, resto
+            return "ambiguo", None, "", resto
+
+        return "no", None, "", []
+
+    no_encontrados: List[Dict[str, object]] = []
+    ambiguos: List[Dict[str, object]] = []
+    aproximados: List[Dict[str, object]] = []
+
+    for zr in zoom_records:
+        zoom_tokens = set(tokenize(str(zr.get("Nombre", ""))))
+        zoom_sede = str(zr.get("Sede", "") or "")
+
+        estado, idx, metodo, cands = _resolver(zoom_tokens, zoom_sede)
+
+        if estado == "no":
+            # 3) ¿Nombre escrito todo junto? ("mariateresacortes")
+            reemplazos = set()
+            for tok in zoom_tokens:
+                partes = _split_joined_token(tok, vocab)
+                if partes:
+                    reemplazos.add((tok, tuple(partes)))
+            if reemplazos:
+                nuevos = set(zoom_tokens)
+                for tok, partes in reemplazos:
+                    nuevos.discard(tok)
+                    nuevos.update(partes)
+                estado, idx, metodo, cands = _resolver(nuevos, zoom_sede)
+                if estado == "ok":
+                    metodo = "nombre escrito todo junto" + (", " + metodo if metodo else "")
+
+        if estado == "no":
             no_encontrados.append(zr)
             continue
-
-        candidates.sort(key=lambda c: c[0], reverse=True)
-        top_score = candidates[0][0]
-        top_matches = [idx for s, idx in candidates if s == top_score]
-
-        if len(top_matches) > 1:
-            ambiguos.append(zr)
+        if estado == "ambiguo":
+            ambiguos.append({**zr, "Posibles": [_label(i) for i in cands]})
             continue
 
-        idx = top_matches[0]
         entries[idx]["_duracion_total"] += float(zr.get("Duración (minutos)", 0) or 0)
         entries[idx]["_matched_zoom_names"].append(str(zr.get("Nombre", "")))
+        if metodo:
+            e = entries[idx]
+            aproximados.append({
+                "Nombre": str(zr.get("Nombre", "")),
+                "Sede en Zoom": zoom_sede,
+                "Socio asignado": _label(idx).rsplit(" (", 1)[0],
+                "Sede del socio": e["Sede"],
+                "Cómo se asignó": metodo[0].upper() + metodo[1:],
+                "Duración (minutos)": float(zr.get("Duración (minutos)", 0) or 0),
+            })
 
     resultado: List[Dict[str, object]] = []
     for entry in entries:
@@ -413,4 +685,4 @@ def match_zoom_to_roster(
             "Asistencia": compute_attendance_flag(duracion, attendance_threshold),
         })
 
-    return resultado, no_encontrados, ambiguos
+    return resultado, no_encontrados, ambiguos, aproximados

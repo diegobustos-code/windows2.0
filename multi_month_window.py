@@ -23,7 +23,7 @@ from tkinter import ttk, filedialog, simpledialog, messagebox
 from csv_processor import CSVProcessingError, load_zoom_csv
 from roster_matcher import RosterProcessingError, load_roster_excel
 from excel_exporter import export_multi_month_to_excel
-from multi_month_processor import build_multi_month_matrix, detect_month_from_filename
+from multi_month_processor import build_multi_month_matrix_detailed, detect_month_from_filename
 from ui_common import (
     COLOR_BG,
     COLOR_HEADER_BAR,
@@ -353,7 +353,7 @@ class MultiMonthWindow(tk.Toplevel):
             threshold = 30.0
 
         months = [(e["label"], e["records"]) for e in self.month_entries]
-        filas, month_labels, no_encontrados_por_mes, ambiguos_por_mes = build_multi_month_matrix(
+        filas, month_labels, no_encontrados_por_mes, ambiguos_por_mes, aproximados_por_mes = build_multi_month_matrix_detailed(
             months, self.roster_records, threshold
         )
 
@@ -371,6 +371,7 @@ class MultiMonthWindow(tk.Toplevel):
                 filas, month_labels, str(filepath),
                 no_encontrados_por_mes=no_encontrados_por_mes,
                 ambiguos_por_mes=ambiguos_por_mes,
+                aproximados_por_mes=aproximados_por_mes,
             )
         except Exception as e:
             show_popup(self, "Error al exportar", str(e), success=False)
@@ -385,6 +386,14 @@ class MultiMonthWindow(tk.Toplevel):
                 f"participante(s) no encontrado(s) en el listado y "
                 f"{total_ambiguos} ambiguo(s). Quedaron listados, mes por mes, "
                 f"en las pestañas \"No Encontrados\" y \"Ambiguos\" del mismo Excel."
+            )
+
+        total_aprox = sum(len(v) for v in aproximados_por_mes.values())
+        if total_aprox:
+            pendientes_note += (
+                f"\n\n{total_aprox} cotejo(s) se asignaron por aproximación (solo nombre "
+                f"único, apellido con otra ortografía, desempate por sede...): quedaron en "
+                f"la pestaña \"Cotejos aproximados\" para que los revises."
             )
 
         show_popup(

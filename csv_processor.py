@@ -100,8 +100,8 @@ KNOWN_SEDES: Dict[str, List[str]] = {
     "Copiapó": ["copiapo"],
     "La Serena": ["la serena"],
     "Coquimbo": ["coquimbo"],
-    "Valparaíso": ["valparaiso"],
-    "Viña del Mar": ["vina del mar"],
+    "Valparaíso": ["valparaiso", "valpo"],
+    "Viña del Mar": ["vina del mar", "vina"],
     "Quilpué": ["quilpue"],
     "Quillota": ["quillota"],
     "Rancagua": ["rancagua"],
@@ -125,7 +125,7 @@ KNOWN_SEDES: Dict[str, List[str]] = {
     "Providencia": ["providencia"],
     "Gran Avenida": ["gran avenida"],
     "Quilicura": ["quilicura"],
-    "Los Ángeles": ["los angeles"],
+    "Los Ángeles": ["los angeles", "losangeles"],
 }
 
 # Lista aplanada (variante, nombre_bonito), ordenada de más larga a más corta

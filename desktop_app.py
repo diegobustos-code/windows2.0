@@ -51,11 +51,11 @@ from csv_processor import (
     is_disguised_excel_file,
     load_zoom_csv,
 )
-from excel_exporter import export_to_excel
+from excel_exporter import export_pendientes_to_excel, export_to_excel
 from roster_matcher import (
     RosterProcessingError,
     load_roster_excel,
-    match_zoom_to_roster,
+    match_zoom_to_roster_detailed,
 )
 from ui_common import (
     COLOR_BG,
@@ -120,6 +120,7 @@ class ZoomAttendanceDesktopApp(tk.Tk):
         self.filtered_records = []
         self.no_encontrados = []
         self.ambiguos = []
+        self.aproximados = []
         self.mode = "zoom"
         self.zoom_loaded = False
         self.roster_loaded = False
@@ -571,6 +572,7 @@ class ZoomAttendanceDesktopApp(tk.Tk):
         self.all_records = self.zoom_records
         self.no_encontrados = []
         self.ambiguos = []
+        self.aproximados = []
 
         self._reset_filters()
         self.apply_filters()
@@ -608,12 +610,13 @@ class ZoomAttendanceDesktopApp(tk.Tk):
             return
 
         threshold = self._safe_float(self.threshold_var.get(), 30.0)
-        resultado, no_encontrados, ambiguos = match_zoom_to_roster(
+        resultado, no_encontrados, ambiguos, aproximados = match_zoom_to_roster_detailed(
             self.zoom_records, self.roster_records, threshold
         )
         self.all_records = resultado
         self.no_encontrados = no_encontrados
         self.ambiguos = ambiguos
+        self.aproximados = aproximados
         self.mode = "cotejo"
 
         self._reset_filters(keep_threshold=True)
@@ -623,7 +626,8 @@ class ZoomAttendanceDesktopApp(tk.Tk):
         a = sum(1 for r in resultado if r["Asistencia"] == "A")
         self.status_var.set(
             f"Cotejo listo: {p} 'P' y {a} 'A' de {len(resultado)} socios. "
-            f"Sin coincidencia: {len(no_encontrados)} | Ambiguos: {len(ambiguos)}."
+            f"Sin coincidencia: {len(no_encontrados)} | Ambiguos: {len(ambiguos)} | "
+            f"Cotejados por aproximación: {len(aproximados)}."
         )
         self._refresh_button_states()
 
@@ -781,14 +785,36 @@ class ZoomAttendanceDesktopApp(tk.Tk):
         folder = self._export_dir("Cotejados")
         filename = f"asistencia_{self._month_slug()}.xlsx"
         filepath = folder / filename
+
+        records = self.filtered_records
+        extras = {}
+        if self.mode == "cotejo":
+            # Se respeta el filtro de la pantalla, pero la hoja sale en el
+            # MISMO ORDEN del listado de socios (no en el orden de la tabla
+            # de la ventana) y con las pestañas de revisión en el mismo libro.
+            elegidos = {id(r) for r in self.filtered_records}
+            records = [r for r in self.all_records if id(r) in elegidos]
+            extras = dict(
+                month_label=self.attendance_month,
+                no_encontrados=self.no_encontrados,
+                ambiguos=self.ambiguos,
+                aproximados=self.aproximados,
+            )
         try:
-            export_to_excel(self.filtered_records, str(filepath))
+            export_to_excel(records, str(filepath), **extras)
         except Exception as e:
             show_popup(self, "Error al exportar", str(e), success=False)
             return
+
+        nota = ""
+        if extras:
+            nota = (
+                "\n\nEl libro trae también las pestañas \"Ambiguos\", \"No Encontrados\" "
+                "y \"Cotejos aproximados\" para revisar a mano."
+            )
         show_popup(
             self, "Archivo guardado correctamente",
-            f"Se guardó en:\nDownloads / {APP_TITLE} / Cotejados\n\ncon el nombre:\n{filename}",
+            f"Se guardó en:\nDownloads / {APP_TITLE} / Cotejados\n\ncon el nombre:\n{filename}{nota}",
             success=True, open_path=str(filepath), is_file=True,
         )
 
@@ -798,28 +824,14 @@ class ZoomAttendanceDesktopApp(tk.Tk):
         if not self.no_encontrados and not self.ambiguos:
             show_popup(self, "Sin pendientes", "No hay registros pendientes de revisión.")
             return
-        import csv as csv_module
         folder = self._export_dir("Por revisar")
-        filename = f"pendientes_{self._month_slug()}.csv"
+        filename = f"pendientes_{self._month_slug()}.xlsx"
         filepath = folder / filename
         try:
-            with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv_module.DictWriter(
-                    f, fieldnames=["Categoría", "Nombre en Zoom", "Duración (minutos)"]
-                )
-                writer.writeheader()
-                for r in self.no_encontrados:
-                    writer.writerow({
-                        "Categoría": "No encontrado en el listado oficial",
-                        "Nombre en Zoom": r.get("Nombre", ""),
-                        "Duración (minutos)": r.get("Duración (minutos)", 0),
-                    })
-                for r in self.ambiguos:
-                    writer.writerow({
-                        "Categoría": "Coincide con más de un socio (ambiguo)",
-                        "Nombre en Zoom": r.get("Nombre", ""),
-                        "Duración (minutos)": r.get("Duración (minutos)", 0),
-                    })
+            export_pendientes_to_excel(
+                str(filepath), self.attendance_month,
+                self.no_encontrados, self.ambiguos, self.aproximados,
+            )
         except Exception as e:
             show_popup(self, "Error al exportar", str(e), success=False)
             return

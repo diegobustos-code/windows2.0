@@ -26,7 +26,7 @@ meses de Zoom, respetando todo lo que ya estaba en el archivo:
       en el Reporte Multi-Mes, para revisión manual.
 
 Reutiliza sin cambios la detección de columnas (roster_matcher) y el
-cotejo (roster_matcher.match_zoom_to_roster) que usa el resto de la
+cotejo (roster_matcher.match_zoom_to_roster_detailed) que usa el resto de la
 aplicación — lo único nuevo aquí es ESCRIBIR el resultado dentro de la
 hoja existente en vez de generar una tabla desde cero.
 """
@@ -43,9 +43,12 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from copy import copy
 
-from excel_exporter import _write_review_sheet, apply_status_style
+from excel_exporter import (
+    SHEET_AMBIGUOS, SHEET_APROXIMADOS, SHEET_NO_ENCONTRADOS,
+    _write_aproximados_sheet, _write_review_sheet, _write_table_sheet, apply_status_style,
+)
 from multi_month_processor import extract_month_name_only
-from roster_matcher import _detect_full_format, _detect_simple_format, match_zoom_to_roster
+from roster_matcher import _detect_full_format, _detect_simple_format, match_zoom_to_roster_detailed
 
 
 class RosterSheetFillError(Exception):
@@ -85,6 +88,13 @@ class FillResult:
     ambiguos_por_mes: Dict[str, List[Dict[str, object]]]
     celdas_escritas: int
     celdas_respetadas_j: int
+    aproximados_por_mes: Dict[str, List[Dict[str, object]]] = field(default_factory=dict)
+    # Casos donde lo que ya figuraba en el listado (J, A o P) no coincide con
+    # lo que dice el Zoom; se listan en la pestaña "Revisar diferencias".
+    diferencias: List[Dict[str, object]] = field(default_factory=list)
+
+
+SHEET_DIFERENCIAS = "Revisar diferencias"
 
 
 def _repair_sheet_tables(ws: Worksheet, last_col: int, last_row: int) -> None:
@@ -302,8 +312,10 @@ def fill_roster_sheet(
           (con el mismo color semáforo que usa el resto de la app).
 
     Al final, agrega (o reemplaza, si ya existían de una corrida
-    anterior) dos pestañas en el MISMO archivo: "No Encontrados" y
-    "Ambiguos", con el detalle mes por mes para revisión manual.
+    anterior) cuatro pestañas en el MISMO archivo, para revisión manual:
+    "No Encontrados", "Ambiguos", "Cotejos aproximados" y "Revisar
+    diferencias" (esta última lista a quienes el Zoom marca Presentes pero
+    el listado tenía como J o A, y a quienes pasaron de P a A).
 
     Devuelve un FillResult con el resumen de lo que se hizo, para
     mostrárselo al usuario.
@@ -312,6 +324,8 @@ def fill_roster_sheet(
     columns_updated: List[str] = []
     no_encontrados_por_mes: Dict[str, List[Dict[str, object]]] = {}
     ambiguos_por_mes: Dict[str, List[Dict[str, object]]] = {}
+    aproximados_por_mes: Dict[str, List[Dict[str, object]]] = {}
+    diferencias: List[Dict[str, object]] = []
     celdas_escritas = 0
     celdas_respetadas_j = 0
 
@@ -333,11 +347,12 @@ def fill_roster_sheet(
             sheet_info.next_free_col += 1
             columns_created.append(bare_month)
 
-        resultado, no_encontrados, ambiguos = match_zoom_to_roster(
+        resultado, no_encontrados, ambiguos, aproximados = match_zoom_to_roster_detailed(
             zoom_records, sheet_info.roster_records, threshold_minutes
         )
         no_encontrados_por_mes[month_label] = no_encontrados
         ambiguos_por_mes[month_label] = ambiguos
+        aproximados_por_mes[month_label] = aproximados
 
         # resultado[i] corresponde exactamente a sheet_info.roster_records[i]
         # (match_zoom_to_roster conserva el orden), que a su vez corresponde
@@ -345,11 +360,31 @@ def fill_roster_sheet(
         for idx, row_number in enumerate(sheet_info.row_numbers):
             cell = sheet_info.sheet.cell(row=row_number, column=col)
             current = str(cell.value).strip().upper() if cell.value is not None else ""
+            nuevo = resultado[idx]["Asistencia"]  # "P" o "A"
+
+            # Diferencias con lo que ya figuraba en el listado, para revisar:
+            #   J y Zoom dice P (la J se respeta), A y Zoom dice P, P y Zoom dice A.
+            if (current, nuevo) in (("J", "P"), ("A", "P"), ("P", "A")):
+                reg = sheet_info.roster_records[idx]
+                diferencias.append({
+                    "Mes": month_label,
+                    "Nombre": reg["Nombres"].strip(),
+                    "Apellido": f"{reg['Apellido Paterno']} {reg['Apellido Materno']}".strip(),
+                    "Sede": reg["Sede"].strip(),
+                    "Figuraba en el listado": current,
+                    "Según Zoom": nuevo,
+                    "Minutos en Zoom": resultado[idx]["Duración (minutos)"],
+                    "Qué hizo el programa": (
+                        "Se respetó la J (no se modificó la celda)" if current == "J"
+                        else f"Se cambió de {current} a {nuevo}"
+                    ),
+                })
+
             if current == "J":
                 celdas_respetadas_j += 1
                 continue  # Inasistencia justificada: nunca se sobrescribe.
 
-            cell.value = resultado[idx]["Asistencia"]  # "P" o "A"; el formato se aplica al final
+            cell.value = nuevo  # el formato se aplica al final
             celdas_escritas += 1
 
     # --- Formato de asistencia: se aplica a TODAS las celdas P/A/J de los
@@ -376,19 +411,31 @@ def fill_roster_sheet(
     # --- Pestañas de revisión: se eliminan primero si ya existían (de una
     # corrida anterior), para que la actualización sea idempotente y no
     # vaya acumulando pestañas duplicadas cada vez que se rellena. ---
-    for title in ("No Encontrados", "Ambiguos"):
+    for title in (SHEET_NO_ENCONTRADOS, SHEET_AMBIGUOS, SHEET_APROXIMADOS, SHEET_DIFERENCIAS):
         if title in sheet_info.workbook.sheetnames:
             sheet_info.workbook.remove(sheet_info.workbook[title])
 
     _write_review_sheet(
-        sheet_info.workbook, "No Encontrados", month_labels_order, no_encontrados_por_mes,
+        sheet_info.workbook, SHEET_NO_ENCONTRADOS, month_labels_order, no_encontrados_por_mes,
         empty_message="No hubo participantes sin encontrar en ningún mes.",
         table_name="TablaNoEncontradosRelleno",
     )
     _write_review_sheet(
-        sheet_info.workbook, "Ambiguos", month_labels_order, ambiguos_por_mes,
+        sheet_info.workbook, SHEET_AMBIGUOS, month_labels_order, ambiguos_por_mes,
         empty_message="No hubo participantes ambiguos en ningún mes.",
-        table_name="TablaAmbiguosRelleno",
+        table_name="TablaAmbiguosRelleno", con_posibles=True,
+    )
+    _write_aproximados_sheet(
+        sheet_info.workbook, month_labels_order, aproximados_por_mes,
+        table_name="TablaAproximadosRelleno",
+    )
+    columnas_dif = ["Mes", "Nombre", "Apellido", "Sede", "Figuraba en el listado",
+                    "Según Zoom", "Minutos en Zoom", "Qué hizo el programa"]
+    _write_table_sheet(
+        sheet_info.workbook, SHEET_DIFERENCIAS, columnas_dif,
+        [[d[c] for c in columnas_dif] for d in diferencias],
+        "No hubo diferencias entre el listado y los reportes de Zoom.",
+        "TablaDiferenciasRelleno",
     )
 
     return FillResult(
@@ -398,4 +445,6 @@ def fill_roster_sheet(
         ambiguos_por_mes=ambiguos_por_mes,
         celdas_escritas=celdas_escritas,
         celdas_respetadas_j=celdas_respetadas_j,
+        aproximados_por_mes=aproximados_por_mes,
+        diferencias=diferencias,
     )

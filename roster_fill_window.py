@@ -401,6 +401,19 @@ class RosterFillWindow(tk.Toplevel):
                 f"\"Ambiguos\" del mismo archivo."
             )
 
+        total_aprox = sum(len(v) for v in result.aproximados_por_mes.values())
+        if total_aprox:
+            resumen.append(
+                f"{total_aprox} cotejo(s) asignados por aproximación (solo nombre único, "
+                f"apellido con otra ortografía, desempate por sede...): pestaña "
+                f"\"Cotejos aproximados\"."
+            )
+        if result.diferencias:
+            resumen.append(
+                f"{len(result.diferencias)} caso(s) donde el Zoom no coincide con lo que ya "
+                f"figuraba en el listado (J / A / P): pestaña \"Revisar diferencias\"."
+            )
+
         show_popup(
             self, "Listado actualizado correctamente",
             f"Se guardó una COPIA actualizada (el archivo original no se modificó) en:\n"

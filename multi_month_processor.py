@@ -22,7 +22,7 @@ import re
 import unicodedata
 from typing import Dict, List, Optional, Tuple
 
-from roster_matcher import match_zoom_to_roster
+from roster_matcher import match_zoom_to_roster_detailed
 
 MONTH_NAMES_ES = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
@@ -169,55 +169,76 @@ def build_multi_month_matrix(
     Dict[str, List[Dict[str, object]]],
 ]:
     """
+    Igual que siempre: devuelve (filas, etiquetas_de_mes, no_encontrados_por_mes,
+    ambiguos_por_mes). Ver build_multi_month_matrix_detailed, que además
+    entrega los cotejos aproximados.
+    """
+    filas, month_labels, no_enc, amb, _aprox = build_multi_month_matrix_detailed(
+        months, roster_records, threshold_minutes
+    )
+    return filas, month_labels, no_enc, amb
+
+
+def build_multi_month_matrix_detailed(
+    months: List[Tuple[str, List[Dict[str, object]]]],
+    roster_records: List[Dict[str, str]],
+    threshold_minutes: float = 30.0,
+) -> Tuple[
+    List[Dict[str, object]],
+    List[str],
+    Dict[str, List[Dict[str, object]]],
+    Dict[str, List[Dict[str, object]]],
+    Dict[str, List[Dict[str, object]]],
+]:
+    """
     Coteja el listado oficial de socios contra VARIOS meses de asistencia
-    de Zoom, uno a la vez (reutilizando match_zoom_to_roster sin cambios),
-    y combina los resultados en una sola tabla: una fila por socio, con
-    una columna de Asistencia (P/A) por cada mes.
+    de Zoom, uno a la vez (con roster_matcher.match_zoom_to_roster_detailed),
+    y combina los resultados en una sola tabla: una fila por socio, EN EL
+    MISMO ORDEN del listado oficial, con una columna de Asistencia (P/A) por
+    cada mes.
 
     `months` es una lista de tuplas (etiqueta_del_mes, registros_zoom_del_mes),
     en el orden en que deben aparecer las columnas en el reporte final.
 
-    Devuelve (filas, etiquetas_de_mes, no_encontrados_por_mes, ambiguos_por_mes):
+    Devuelve (filas, etiquetas_de_mes, no_encontrados_por_mes,
+    ambiguos_por_mes, aproximados_por_mes):
         filas: lista de diccionarios con "Nombre", "Apellido", "Sede" y,
                además, una llave por cada etiqueta de mes con "P" o "A".
         etiquetas_de_mes: los meses, en el mismo orden recibido (define el
                orden de las columnas en el Excel).
-        no_encontrados_por_mes / ambiguos_por_mes: igual que en el cotejo
-               normal, pero agrupados por mes, para revisión manual.
+        no_encontrados_por_mes / ambiguos_por_mes / aproximados_por_mes:
+               igual que en el cotejo normal, pero agrupados por mes, para
+               revisión manual.
     """
-    combined: Dict[Tuple[str, str, str], Dict[str, object]] = {}
-    order: List[Tuple[str, str, str]] = []
+    # Las filas se identifican por su POSICIÓN en el listado (no por
+    # nombre/apellido/sede), para que dos socios con los mismos datos no
+    # se mezclen en una sola fila.
+    filas: List[Dict[str, object]] = [
+        {
+            "Nombre": r["Nombres"].strip(),
+            "Apellido": re.sub(r"\s{2,}", " ", f"{r['Apellido Paterno']} {r['Apellido Materno']}".strip()),
+            "Sede": r["Sede"].strip(),
+        }
+        for r in roster_records
+    ]
     no_encontrados_por_mes: Dict[str, List[Dict[str, object]]] = {}
     ambiguos_por_mes: Dict[str, List[Dict[str, object]]] = {}
+    aproximados_por_mes: Dict[str, List[Dict[str, object]]] = {}
 
     for month_label, zoom_records in months:
-        resultado, no_encontrados, ambiguos = match_zoom_to_roster(
+        resultado, no_encontrados, ambiguos, aproximados = match_zoom_to_roster_detailed(
             zoom_records, roster_records, threshold_minutes
         )
         no_encontrados_por_mes[month_label] = no_encontrados
         ambiguos_por_mes[month_label] = ambiguos
+        aproximados_por_mes[month_label] = aproximados
 
-        for row in resultado:
-            key = (row["Nombre"], row["Apellido"], row["Sede"])
-            if key not in combined:
-                combined[key] = {
-                    "Nombre": row["Nombre"],
-                    "Apellido": row["Apellido"],
-                    "Sede": row["Sede"],
-                }
-                order.append(key)
-            combined[key][month_label] = row["Asistencia"]
+        for fila, row in zip(filas, resultado):
+            fila[month_label] = row["Asistencia"]
 
     month_labels = [label for label, _ in months]
-
-    filas: List[Dict[str, object]] = []
-    for key in order:
-        row = combined[key]
-        # Resguardo: match_zoom_to_roster siempre genera una fila por cada
-        # socio del listado oficial, así que en la práctica esto no debería
-        # activarse nunca, pero se deja por seguridad ante datos atípicos.
+    for fila in filas:
         for label in month_labels:
-            row.setdefault(label, "A")
-        filas.append(row)
+            fila.setdefault(label, "A")
 
-    return filas, month_labels, no_encontrados_por_mes, ambiguos_por_mes
+    return filas, month_labels, no_encontrados_por_mes, ambiguos_por_mes, aproximados_por_mes
